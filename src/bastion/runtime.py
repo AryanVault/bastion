@@ -1,0 +1,117 @@
+"""Wires configuration, secrets, storage, tools, policy and the LLM provider together.
+
+Every channel (the CLI now, Telegram next) builds its agent from a ``Runtime``, so all of them
+share one policy, one audit log and one set of security controls.
+"""
+
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from bastion.config import DATABASE_FILE, POLICY_FILE, ConfigError, Settings, load_settings
+from bastion.core.agent import Agent, AgentLimits, Approver
+from bastion.llm.factory import build_provider
+from bastion.llm.types import LLMProvider
+from bastion.security.approvals import ApprovalService
+from bastion.security.audit import AuditLog
+from bastion.security.crypto import FieldCipher
+from bastion.security.policy import PolicyEngine, load_policy
+from bastion.security.redact import Redactor
+from bastion.security.vault import (
+    AUDIT_KEY,
+    BRAVE_API_KEY,
+    STORAGE_KEY,
+    SecretStore,
+    Vault,
+    VaultAnchor,
+)
+from bastion.storage.db import connect
+from bastion.storage.memory_bank import MemoryBank
+from bastion.tools.base import Tool, ToolRegistry
+from bastion.tools.memory import MemoryDeleteTool, MemorySaveTool, MemorySearchTool
+from bastion.tools.web_fetch import WebFetchTool
+from bastion.tools.web_search import BraveSearch, WebSearchTool
+
+
+@dataclass
+class Runtime:
+    home: Path
+    settings: Settings
+    vault: Vault
+    conn: sqlite3.Connection
+    audit: AuditLog
+    tools: ToolRegistry
+    policy: PolicyEngine
+    provider: LLMProvider
+    notices: tuple[str, ...]
+
+    def agent(self, approver: Approver) -> Agent:
+        limits = self.settings.limits
+        return Agent(
+            provider=self.provider,
+            tools=self.tools,
+            policy=self.policy,
+            approvals=ApprovalService(),
+            approver=approver,
+            audit=self.audit,
+            limits=AgentLimits(
+                max_steps=limits.max_steps,
+                max_tool_calls=limits.max_tool_calls,
+                max_output_tokens=self.settings.llm.max_output_tokens,
+                max_turn_tokens=limits.max_turn_tokens,
+            ),
+        )
+
+    async def aclose(self) -> None:
+        """Release the provider's network resources (call inside the event loop)."""
+        await self.provider.aclose()
+
+    def close(self) -> None:
+        self.conn.close()
+
+
+def open_audit_log(conn: sqlite3.Connection, vault: Vault, redactor: Redactor) -> AuditLog:
+    """The audit log, with its chain head checkpointed in the OS keyring."""
+    return AuditLog(conn, vault.key(AUDIT_KEY), redactor, anchor=VaultAnchor(vault))
+
+
+def build_tools(
+    settings: Settings, vault: Vault, bank: MemoryBank
+) -> tuple[ToolRegistry, tuple[str, ...]]:
+    tools: list[Tool[Any]] = [
+        WebFetchTool(),
+        MemorySaveTool(bank),
+        MemorySearchTool(bank),
+        MemoryDeleteTool(bank),
+    ]
+    notices: list[str] = []
+    if settings.search.provider == "brave":
+        key = vault.get(BRAVE_API_KEY)
+        if key:
+            tools.append(WebSearchTool(BraveSearch(key)))
+        else:
+            notices.append(
+                f"Web search is off (no Brave Search key). Run: bastion secrets set {BRAVE_API_KEY}"
+            )
+    return ToolRegistry(tools), tuple(notices)
+
+
+def open_runtime(home: Path, store: SecretStore, *, provider: LLMProvider | None = None) -> Runtime:
+    settings = load_settings(home)
+    redactor = Redactor()
+    vault = Vault(store, redactor)
+    policy_path = home / POLICY_FILE
+    if not policy_path.exists():
+        raise ConfigError(f"{policy_path} not found. Run: bastion init")
+    conn = connect(home / DATABASE_FILE)
+    try:
+        audit = open_audit_log(conn, vault, redactor)
+        bank = MemoryBank(conn, FieldCipher(vault.key(STORAGE_KEY)))
+        tools, notices = build_tools(settings, vault, bank)
+        policy = PolicyEngine(load_policy(policy_path), tools.names)
+        llm = provider if provider is not None else build_provider(settings.llm, vault)
+    except BaseException:
+        conn.close()
+        raise
+    return Runtime(home, settings, vault, conn, audit, tools, policy, llm, notices)

@@ -113,7 +113,17 @@ class AnthropicProvider:
             raise _status_error(exc) from exc
         except anthropic.APIConnectionError as exc:
             raise ProviderError("could not reach the Anthropic API", retryable=True) from exc
+        except anthropic.APIError as exc:
+            raise ProviderError(
+                f"unexpected Anthropic API response ({type(exc).__name__})"
+            ) from exc
+        except (ValueError, TypeError, UnicodeError) as exc:
+            # Raised by the SDK before sending (e.g. a request that would need streaming).
+            raise ProviderError(f"the request could not be sent: {str(exc)[:_MAX_DETAIL]}") from exc
         return _from_wire(response)
+
+    async def aclose(self) -> None:
+        await self._client.close()
 
 
 def _tool_param(spec: ToolSpec) -> dict[str, Any]:

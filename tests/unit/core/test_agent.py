@@ -382,3 +382,64 @@ async def test_the_owners_text_is_not_stored_in_the_audit_log(audit: AuditLog) -
     )
 
     assert all("diary" not in str(entry.data) for entry in audit.tail(50))
+
+
+# ------------------------------------------------------ review regressions
+
+
+@pytest.mark.security
+async def test_failures_after_contacting_an_attacker_taint_and_are_fenced(audit: AuditLog) -> None:
+    from support.fakes import FailingFetchTool
+
+    provider = ScriptedProvider(
+        use_tools(call("fetch_fail", url="https://evil.example")), reply("ok")
+    )
+
+    result = await make_agent(provider, audit, tools=[FailingFetchTool()]).run_turn(
+        Conversation.new(), "fetch it"
+    )
+
+    error = provider.last_results(1)[0].content
+    assert result.conversation.taint.sources == ("web_fetch:evil.example",)
+    assert "<untrusted-data" in error
+
+
+@pytest.mark.security
+async def test_invisible_characters_are_stripped_from_untrusted_output(audit: AuditLog) -> None:
+    from support.fakes import SmugglingPageTool
+
+    provider = ScriptedProvider(
+        use_tools(call("read_smuggled", url="https://x.example")), reply("ok")
+    )
+
+    await make_agent(provider, audit, tools=[SmugglingPageTool()]).run_turn(
+        Conversation.new(), "go"
+    )
+
+    content = provider.last_results(1)[0].content
+    assert SmugglingPageTool.HIDDEN not in content
+    assert "\u202e" not in content
+    assert "Nice recipes." in content
+
+
+@pytest.mark.security
+async def test_the_audit_log_does_not_store_arguments_in_plaintext(audit: AuditLog) -> None:
+    provider = ScriptedProvider(use_tools(call("echo", text="my secret diary entry")), reply("ok"))
+
+    await make_agent(provider, audit).run_turn(Conversation.new(), "go")
+
+    assert all("diary" not in str(entry.data) for entry in audit.tail(50))
+
+
+@pytest.mark.security
+async def test_lone_surrogates_from_the_model_cannot_crash_a_turn(audit: AuditLog) -> None:
+    provider = ScriptedProvider(
+        use_tools(call("echo", "a", text="bad\ud800"), call("ec\ud800ho", "b", text="x")),
+        reply("still standing"),
+    )
+
+    result = await make_agent(provider, audit).run_turn(Conversation.new(), "go\udfff")
+
+    assert result.reply == "still standing"
+    assert "\\ud800" in provider.last_results(1)[1].content  # revealed, not raw
+    assert audit.verify().ok

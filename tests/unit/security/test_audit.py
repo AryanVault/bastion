@@ -163,3 +163,81 @@ def test_two_writers_on_one_database_keep_the_chain_intact(db_path: Path) -> Non
 def test_rejects_short_keys(conn: sqlite3.Connection) -> None:
     with pytest.raises(ValueError, match="32 bytes"):
         AuditLog(conn, b"short", Redactor())
+
+
+# ------------------------------------------------------- chain checkpoints
+
+
+class MemoryAnchor:
+    def __init__(self) -> None:
+        self.value: str | None = None
+
+    def get(self) -> str | None:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.value = value
+
+
+def _anchored(conn: sqlite3.Connection, anchor: MemoryAnchor) -> AuditLog:
+    return AuditLog(conn, KEY, Redactor(), anchor=anchor)
+
+
+def test_a_checkpoint_records_the_chain_head(conn: sqlite3.Connection) -> None:
+    anchor = MemoryAnchor()
+
+    entry = _anchored(conn, anchor).append("turn.end", {}, checkpoint=True)
+
+    assert anchor.value == f"{entry.seq}:{entry.mac}"
+
+
+def test_entries_after_the_checkpoint_verify(conn: sqlite3.Connection) -> None:
+    log = _anchored(conn, MemoryAnchor())
+    log.append("turn.end", {}, checkpoint=True)
+    log.append("event", {})
+
+    assert log.verify().ok
+
+
+@pytest.mark.security
+def test_removing_checkpointed_entries_from_the_end_is_detected(conn: sqlite3.Connection) -> None:
+    log = _anchored(conn, MemoryAnchor())
+    for i in range(3):
+        log.append("event", {"i": i}, checkpoint=True)
+
+    _tamper(conn, "DELETE FROM audit_log WHERE seq = ?", (3,))
+    result = log.verify()
+
+    assert not result.ok
+    assert "removed" in result.reason
+
+
+@pytest.mark.security
+def test_a_wiped_log_is_detected(conn: sqlite3.Connection, tmp_path: Path) -> None:
+    anchor = MemoryAnchor()
+    _anchored(conn, anchor).append("setup.init", {}, checkpoint=True)
+
+    with closing(connect(tmp_path / "fresh.db")) as fresh:
+        result = _anchored(fresh, anchor).verify()
+
+    assert not result.ok
+
+
+@pytest.mark.security
+def test_a_checkpoint_that_does_not_match_is_detected(conn: sqlite3.Connection) -> None:
+    anchor = MemoryAnchor()
+    log = _anchored(conn, anchor)
+    log.append("event", {}, checkpoint=True)
+    anchor.value = "1:" + "0" * 64
+
+    assert not log.verify().ok
+
+
+def test_a_corrupt_checkpoint_is_reported(conn: sqlite3.Connection) -> None:
+    anchor = MemoryAnchor()
+    anchor.value = "garbage"
+
+    result = _anchored(conn, anchor).verify()
+
+    assert not result.ok
+    assert "corrupt" in result.reason

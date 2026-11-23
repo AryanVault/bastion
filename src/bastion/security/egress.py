@@ -69,7 +69,7 @@ def is_public_ip(ip: IPAddress) -> bool:
         embedded = _embedded_ipv4(ip)
         if embedded is not None:
             return is_public_ip(embedded)
-        if ip.teredo is not None:
+        if ip.teredo is not None or ip.is_site_local:
             return False
     return ip.is_global and not (
         ip.is_multicast
@@ -122,7 +122,8 @@ def normalize_url(raw: str, *, allowed_ports: frozenset[int] = DEFAULT_ALLOWED_P
         raise EgressError("malformed URL") from exc
     scheme = parts.scheme.lower()
     if scheme not in ALLOWED_SCHEMES:
-        raise EgressError(f"scheme '{scheme or '?'}' is not allowed")
+        # Never echo the scheme: for redirects it is chosen by a remote server.
+        raise EgressError("only http and https URLs are allowed")
     if parts.username is not None or parts.password is not None:
         raise EgressError("credentials in URLs are not allowed")
     host = _normalize_host(parts.hostname)
@@ -185,7 +186,8 @@ class GuardedBackend(httpcore2.AsyncNetworkBackend):
         self._resolver = resolver
         self._inner = inner if inner is not None else httpcore2.AnyIOBackend()
 
-    async def _resolve_public(self, host: str, port: int) -> str:
+    async def _resolve_public(self, host: str, port: int) -> list[str]:
+        """All addresses for ``host``; refuses if *any* of them is not public."""
         addresses = await self._resolver(host, port)
         if not addresses:
             raise EgressError(f"could not resolve {host}")
@@ -198,7 +200,7 @@ class GuardedBackend(httpcore2.AsyncNetworkBackend):
             if not is_public_ip(ip):
                 raise EgressError(f"{host} resolves to a non-public address")
             validated.append(str(ip))
-        return validated[0]
+        return list(dict.fromkeys(validated))
 
     async def connect_tcp(
         self,
@@ -208,14 +210,19 @@ class GuardedBackend(httpcore2.AsyncNetworkBackend):
         local_address: str | None = None,
         socket_options: Iterable[Any] | None = None,
     ) -> httpcore2.AsyncNetworkStream:
-        address = await self._resolve_public(host, port)
-        return await self._inner.connect_tcp(
-            address,
-            port,
-            timeout=timeout,
-            local_address=local_address,
-            socket_options=socket_options,
-        )
+        failures: list[Exception] = []
+        for address in await self._resolve_public(host, port):
+            try:
+                return await self._inner.connect_tcp(
+                    address,
+                    port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except (httpcore2.ConnectError, httpcore2.ConnectTimeout) as exc:
+                failures.append(exc)  # e.g. an IPv6 address on a host without IPv6: try the next
+        raise failures[-1]
 
     async def connect_unix_socket(
         self,
@@ -254,5 +261,6 @@ def guarded_client(
         trust_env=False,
         follow_redirects=False,
         timeout=timeout,
-        headers={"User-Agent": USER_AGENT},
+        # Uncompressed responses keep the size cap meaningful (no decompression bombs).
+        headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"},
     )

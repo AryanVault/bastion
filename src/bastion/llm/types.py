@@ -106,3 +106,7 @@ class LLMProvider(Protocol):
         tools: Sequence[ToolSpec],
         max_tokens: int,
     ) -> Completion: ...
+
+    async def aclose(self) -> None:
+        """Release network resources (HTTP connection pools)."""
+        ...

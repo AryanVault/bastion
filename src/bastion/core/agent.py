@@ -41,6 +41,7 @@ from bastion.security.approvals import ApprovalError, ApprovalRequest, ApprovalS
 from bastion.security.audit import AuditLog
 from bastion.security.egress import extract_urls
 from bastion.security.policy import Decision, PolicyEngine, Verdict
+from bastion.text import reveal_invisible, strip_invisible
 from bastion.tools.base import (
     RiskTier,
     Tool,
@@ -103,7 +104,12 @@ _BUDGET_NOTICE = "I stopped because this request exceeded its step or token budg
 
 
 def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    # backslashreplace: model-supplied lone surrogates must never crash the audit trail.
+    return hashlib.sha256(text.encode("utf-8", "backslashreplace")).hexdigest()
+
+
+def _clip(text: str, limit: int = 200) -> str:
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _error(call: ToolCall, message: str) -> ToolResult:
@@ -236,6 +242,7 @@ class Agent:
                 "output_tokens": turn.usage.output_tokens,
                 "tainted_by": list(turn.conversation.taint.sources),
             },
+            checkpoint=True,
         )
         return TurnResult(turn.conversation, reply, stop, turn.usage, turn.tool_calls)
 
@@ -257,7 +264,7 @@ class Agent:
         tool = self._tools.get(tool_call.name)
         if tool is None:
             self._audit.append("tool.denied", {"tool": tool_call.name, "reason": "unknown tool"})
-            return _error(tool_call, f"unknown tool '{tool_call.name}'.")
+            return _error(tool_call, f"unknown tool '{reveal_invisible(tool_call.name)}'.")
         try:
             args = tool.parse_args(tool_call.arguments)
         except ValidationError as exc:
@@ -276,7 +283,9 @@ class Agent:
                 "tier": tier.value,
                 "verdict": decision.verdict.value,
                 "reason": decision.reason,
-                "arguments": args.model_dump(mode="json"),
+                # A summary, not the arguments: the log must not become a plaintext copy of
+                # private data (memory contents, queries) that is encrypted everywhere else.
+                "arguments": tool.audit_view(args),
             },
         )
         if decision.verdict is Verdict.DENY:
@@ -338,25 +347,36 @@ class Agent:
             async with asyncio.timeout(self._limits.tool_timeout_seconds):
                 output = await tool.run(args, ctx)
         except ToolError as exc:
-            self._audit.append(
-                "tool.error",
-                {
-                    "tool": tool.name,
-                    "error": str(exc),
-                    "security_denial": isinstance(exc, ToolDenied),
-                },
-            )
-            return _error(tool_call, str(exc))
+            return self._tool_error(turn, tool_call, tool, exc)
         except TimeoutError:
             self._audit.append("tool.error", {"tool": tool.name, "error": "timeout"})
             return _error(tool_call, f"{tool.name} timed out.")
         except Exception as exc:  # contain tool bugs: never crash the agent or leak internals
             self._audit.append(
                 "tool.crash",
-                {"tool": tool.name, "error_type": type(exc).__name__, "error": str(exc)},
+                {"tool": tool.name, "error_type": type(exc).__name__, "error": _clip(str(exc))},
             )
             return _error(tool_call, f"{tool.name} failed unexpectedly.")
         return self._accept(turn, tool_call, tool, output)
+
+    def _tool_error(
+        self, turn: _Turn, tool_call: ToolCall, tool: Tool[Any], exc: ToolError
+    ) -> ToolResult:
+        self._audit.append(
+            "tool.error",
+            {
+                "tool": tool.name,
+                "error": _clip(str(exc)),
+                "security_denial": isinstance(exc, ToolDenied),
+                "untrusted_source": exc.untrusted_source,
+            },
+        )
+        if exc.untrusted_source is None:
+            return _error(tool_call, str(exc))
+        # The failure happened after talking to an untrusted party: treat it like its output.
+        turn.conversation = turn.conversation.tainted_by(exc.untrusted_source)
+        fenced = fence_untrusted(strip_invisible(str(exc)), exc.untrusted_source)
+        return _error(tool_call, fenced)
 
     def _accept(
         self, turn: _Turn, tool_call: ToolCall, tool: Tool[Any], output: ToolOutput
@@ -376,5 +396,11 @@ class Agent:
                 "sha256": _sha256(output.content),
             },
         )
-        content = fence_untrusted(output.content, output.source) if untrusted else output.content
+        # Invisible characters (tag characters, zero-width, bidi) are how injections hide from
+        # people while staying readable to models, so untrusted text loses them before fencing.
+        content = (
+            fence_untrusted(strip_invisible(output.content), output.source)
+            if untrusted
+            else output.content
+        )
         return ToolResult(tool_call.id, content)

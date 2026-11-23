@@ -80,15 +80,21 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T5 | Owner approves "send to alice@" but the agent sends to someone else | Tampering | A1 | Approval bound to a hash of the exact tool arguments; single use; expiring (C4) |
 | T6 | Stranger commands the bot | Spoofing / EoP | A2 | Owner user-ID allowlist set via a one-time CLI pairing code; others silently dropped and audited (C6) |
 | T7 | Hijacked Telegram approves high-risk actions | Spoofing | A3 | TOTP step-up for high-risk tiers (C5); `/stop` kill switch and CLI-side revocation |
-| T8 | Injected instruction stored in memory and replayed in every future session | Tampering (persistence) | A1 | Memory provenance; tainted memories are labelled as data and never placed in the instruction area (C12) |
+| T8 | Injected instruction stored in memory and replayed in every future session | Tampering (persistence) | A1 | Memory provenance bound into the ciphertext; tainted memories come back as untrusted data; caps on untrusted memories; trusted memories always rank first (C12) |
 | T9 | Secrets leak into logs, audit entries, or model context | Info disclosure | A1, A5 | Keyring-only storage (C8); redaction filter on all log and audit output (C8); tools never return credentials |
 | T10 | Token theft from disk | Info disclosure | A5 | OS keyring (C8); AES-GCM field encryption for sensitive DB fields (C13) |
 | T11 | Over-broad Google access amplifies any compromise | EoP | All | Minimal OAuth scopes; `gmail.send` opt-in (C9) |
-| T12 | Owner cannot tell what the agent did, or evidence is edited | Repudiation | A1, A5 | Hash-chained audit log with `bastion audit verify` (C10) |
+| T12 | Owner cannot tell what the agent did, or evidence is edited | Repudiation | A1, A5 | HMAC-chained audit log in SQLite, append-only triggers, `bastion audit verify` (C10) |
 | T13 | Scheduled task loops, burns money, or drifts beyond its purpose | DoS / EoP | A1 | Capability grants, step/token/cost budgets, rate limits, kill switch (C11) |
 | T14 | Poisoned dependency | All | A4 | Hash-locked dependencies, minimal dependency tree, pip-audit, Dependabot, CodeQL, SBOM, signed releases (C14) |
 | T15 | Malicious tool-call arguments (wrong types, path tricks, header injection) | Tampering | A1 | Every tool's arguments validated by a strict Pydantic schema before policy evaluation |
 | T16 | Exposed network listener attacked | EoP | A2 | No inbound ports: Telegram long polling; the CLI runs in-process (no local IPC server) |
+| T17 | Model output misleads the owner on screen: ANSI escapes rewrite the terminal, bidi or zero-width characters disguise an approval's recipient, link text hides the real URL | Spoofing | A1 | Replies shown with control characters stripped; approval prompts show them as visible `\uXXXX`; links rendered with their real URL (C16) |
+| T18 | Data exfiltrated through the chat channel itself: Telegram's servers fetch any URL in a bot message to build a link preview | Info disclosure | A1 | Link previews disabled on every outgoing message (C16, Phase 2) |
+| T19 | Environment variables (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, proxy and certificate settings) or an HTTP redirect divert prompts and the API key | Info disclosure | A4, A5 | Base URLs always passed explicitly and required to be HTTPS (HTTP only for localhost); LLM and web clients ignore proxy/certificate environment variables; LLM clients never follow redirects (Anthropic's `x-api-key` header is not stripped on cross-origin redirects) (C7, C8) |
+| T20 | Crafted HTML makes the parser burn CPU for minutes, freezing the agent and every timeout with it | DoS | A1 | CPython 3.13.6+ required (linear-time `html.parser`; earlier 3.13 releases are quadratic on malformed input); parse-size cap; parsing runs off the event loop; regression test (C7) |
+| T21 | Attacker-controlled text reaches the model through an *error* message (an echoed `Content-Type` or redirect target), unfenced and without tainting | Tampering | A1 | Tool errors never echo remote data; failures after contacting an untrusted party taint the conversation and are fenced like output (C2) |
+| T22 | Instructions hidden in invisible Unicode ("ASCII smuggling" with tag characters, zero-width or bidi characters): readable by the model, invisible to the owner | Tampering | A1 | Invisible characters are stripped from all untrusted tool output before the model sees it, and revealed as `\uXXXX` in approval prompts and the audit viewer (C16) |
 
 ## 8. Controls index
 
@@ -96,7 +102,10 @@ C1 policy engine (default-deny, risk tiers) · C2 taint tracking · C3 quarantin
 C4 argument-bound approvals · C5 TOTP step-up · C6 Telegram lockdown · C7 egress guard ·
 C8 secrets vault and redaction · C9 least-privilege OAuth · C10 tamper-evident audit log ·
 C11 autonomy guardrails · C12 memory provenance · C13 encryption at rest · C14 supply chain ·
-C15 red-team eval suite (verifies C1 to C13 against a corpus of attacks).
+C15 red-team eval suite (verifies C1 to C13 against a corpus of attacks) ·
+C16 display safety (terminal and channel rendering of untrusted text).
+
+Where each control lives in the code: [ARCHITECTURE.md](ARCHITECTURE.md#security-controls-in-the-code).
 
 ## 9. Accepted risks and non-goals
 
@@ -110,6 +119,25 @@ C15 red-team eval suite (verifies C1 to C13 against a corpus of attacks).
 - **Approval fatigue.** If the owner approves everything without reading, approvals don't help.
   Bastion mitigates this by keeping approvals rare (read actions never prompt), showing exact
   diffs, and requiring TOTP only for the highest tier.
+- **URL-selection side channel.** A page or search result can list many links. A hijacked model
+  cannot *construct* a URL, but by choosing *which* listed URL to fetch it could leak a few bits.
+  Per-request tool-call budgets bound this; it is not eliminated. For the same reason, links found
+  inside fetched pages are not made fetchable.
+- **Search queries** are sent to the search provider, just as prompts are sent to the LLM
+  provider. Neither is an attacker-observable channel, but both are third parties.
+- **Audit log tail truncation.** The HMAC chain detects edited, forged, reordered or deleted
+  entries, but cutting entries off the *end* leaves a shorter valid chain. The chain head is
+  therefore checkpointed in the OS keyring at the end of every turn and session, so `verify`
+  catches a truncated or wiped log back to the last checkpoint. Entries written after the last
+  checkpoint are not covered, and an attacker who can rewrite the keyring (A5) can move the
+  checkpoint too. Phase 2 adds an anchor off the machine: a daily chain-head digest sent to the
+  owner on Telegram.
+- **Audit records are summaries.** Tool arguments are logged as lengths and short hashes (plus
+  safe fields such as a URL's host), so the log proves what ran without becoming a plaintext copy
+  of private data. The trade-off: the log alone cannot show the full text of past arguments.
+- **Hidden-text stripping is best effort.** The HTML extractor drops text hidden with common
+  techniques, but pages can hide text in ways it does not detect. Fetched pages therefore stay
+  untrusted regardless.
 - **Shell and code execution and browser automation** are deliberately excluded from v1.
 
 ## 10. How this document is kept honest

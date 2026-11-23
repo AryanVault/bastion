@@ -117,3 +117,39 @@ def test_keyring_store_namespaces_secrets_under_the_service() -> None:
 
     assert backend.data == {("bastion", "audit.hmac_key"): "value-1234567"}
     assert store.get("audit.hmac_key") == "value-1234567"
+
+
+class LockedKeyring(InMemoryKeyring):
+    def get_password(self, service: str, username: str) -> str | None:
+        raise keyring.errors.KeyringLocked("locked")
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        raise keyring.errors.KeyringLocked("locked")
+
+
+def test_keyring_failures_become_vault_errors() -> None:
+    store = KeyringStore(backend=LockedKeyring())
+
+    with pytest.raises(VaultError, match="unavailable"):
+        store.get("audit.hmac_key")
+    with pytest.raises(VaultError, match="unavailable"):
+        store.set("audit.hmac_key", "value-1234567")
+
+
+@pytest.mark.security
+def test_insecure_keyring_backends_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    import keyring.backends.fail
+
+    monkeypatch.setattr(keyring, "get_keyring", lambda: keyring.backends.fail.Keyring())
+
+    with pytest.raises(VaultError, match="insecure"):
+        KeyringStore().get("audit.hmac_key")
+
+
+def test_vault_anchor_round_trips_through_the_vault(vault: Vault) -> None:
+    from bastion.security.vault import VaultAnchor
+
+    anchor = VaultAnchor(vault)
+    anchor.set("7:" + "a" * 64)
+
+    assert anchor.get() == "7:" + "a" * 64

@@ -171,3 +171,21 @@ async def test_api_errors_become_provider_errors(status: int, retryable: bool) -
 
     assert raised.value.retryable is retryable
     assert "sk-ant-test-key" not in str(raised.value)
+
+
+async def test_requests_the_sdk_refuses_become_provider_errors() -> None:
+    fake = FakeAnthropic()
+    provider = AnthropicProvider(fake.client, "claude-haiku-5-5")
+
+    with pytest.raises(ProviderError, match="could not be sent"):
+        await provider.complete(system="s", messages=[], tools=[], max_tokens=64_000)
+
+    assert fake.requests == []
+
+
+async def test_aclose_releases_the_client() -> None:
+    fake = FakeAnthropic()
+
+    await AnthropicProvider(fake.client, "claude-haiku-5-5").aclose()
+
+    assert fake.client.is_closed()

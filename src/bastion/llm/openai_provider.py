@@ -83,9 +83,18 @@ class OpenAICompatProvider:
             raise self._status_error(exc) from exc
         except openai.APIConnectionError as exc:
             raise ProviderError(f"could not reach the {self._name} API", retryable=True) from exc
+        except openai.APIError as exc:
+            raise ProviderError(
+                f"unexpected {self._name} API response ({type(exc).__name__})"
+            ) from exc
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise ProviderError(f"the request could not be sent: {str(exc)[:_MAX_DETAIL]}") from exc
         if not response.choices:
             raise ProviderError(f"{self._name} returned no choices")
         return self._from_wire(response)
+
+    async def aclose(self) -> None:
+        await self._client.close()
 
     def _from_wire(self, response: Any) -> Completion:
         choice = response.choices[0]

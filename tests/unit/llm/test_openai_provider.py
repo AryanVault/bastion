@@ -172,3 +172,11 @@ async def test_api_errors_become_provider_errors(status: int, retryable: bool) -
     assert raised.value.retryable is retryable
     assert "groq" in str(raised.value)
     assert "sk-test-openai-key" not in str(raised.value)
+
+
+async def test_aclose_releases_the_client() -> None:
+    fake = FakeOpenAI()
+
+    await OpenAICompatProvider(fake.client, "some-model").aclose()
+
+    assert fake.client.is_closed()

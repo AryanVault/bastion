@@ -5,6 +5,7 @@ A tool declares a risk tier (which the policy engine uses), a strict Pydantic ar
 permissions; the agent consults the policy engine before ``run`` is ever called.
 """
 
+import hashlib
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
@@ -15,10 +16,25 @@ from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict
 
+from bastion.common import canonical_json
 from bastion.llm.types import ToolSpec
 from bastion.security.egress import UrlProvenance
 
 _TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def fingerprint(text: str) -> str:
+    """Short SHA-256 prefix for audit records (lone surrogates are escaped, never fatal)."""
+    return hashlib.sha256(text.encode("utf-8", "backslashreplace")).hexdigest()[:16]
+
+
+def _summarize(value: Any) -> Any:
+    if isinstance(value, str):
+        return {"chars": len(value), "sha256": fingerprint(value)}
+    if isinstance(value, list | dict):
+        encoded = canonical_json(value)
+        return {"json_chars": len(encoded), "sha256": fingerprint(encoded)}
+    return value
 
 
 class RiskTier(StrEnum):
@@ -52,7 +68,16 @@ class ToolContext:
 
 
 class ToolError(Exception):
-    """A tool failed; the message is safe to return to the model."""
+    """A tool failed; the message is safe to return to the model.
+
+    Set ``untrusted_source`` when the failure happened after contacting an untrusted party
+    (a web server, say). The agent then taints the conversation and fences the message, in
+    case any detail of the failure was influenced by that party.
+    """
+
+    def __init__(self, message: str, *, untrusted_source: str | None = None) -> None:
+        super().__init__(message)
+        self.untrusted_source = untrusted_source
 
 
 class ToolDenied(ToolError):
@@ -72,6 +97,14 @@ class Tool[A: ToolArgs](ABC):
     def describe(self, args: A) -> str:
         """One-line human description of the call, shown in approval prompts."""
         return f"{self.name}({args.model_dump_json()})"
+
+    def audit_view(self, args: A) -> dict[str, Any]:
+        """What the audit log records about a call.
+
+        Text becomes a length and a short hash: the log proves what ran without becoming a
+        plaintext copy of private data. Tools override this to expose safe fields.
+        """
+        return {name: _summarize(value) for name, value in args.model_dump(mode="json").items()}
 
     def parse_args(self, raw: Mapping[str, Any]) -> A:
         return cast("A", self.args_model.model_validate(dict(raw)))

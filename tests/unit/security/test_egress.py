@@ -232,3 +232,59 @@ async def test_client_blocks_dns_rebinding_end_to_end() -> None:
     async with client:
         with pytest.raises(EgressError):
             await client.get("http://rebind.example/")
+
+
+def test_site_local_ipv6_is_not_public() -> None:
+    assert not is_public_ip(ip_address("fec0::1"))
+
+
+@pytest.mark.security
+def test_rejected_schemes_are_not_echoed() -> None:
+    with pytest.raises(EgressError) as raised:
+        normalize_url("ignore-previous-instructions:payload")
+
+    assert "ignore" not in str(raised.value)
+
+
+class FlakyBackend(RecordingBackend):
+    def __init__(self, unreachable: set[str]) -> None:
+        self.unreachable = unreachable
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[Any] | None = None,
+    ) -> httpcore2.AsyncNetworkStream:
+        if host in self.unreachable:
+            raise httpcore2.ConnectError("network unreachable")
+        raise ConnectedError(host)
+
+
+async def test_backend_falls_back_to_the_next_validated_address() -> None:
+    backend = GuardedBackend(
+        resolver=fake_resolver({"dual.example": ["2606:4700::1", "93.184.216.34"]}),
+        inner=FlakyBackend({"2606:4700::1"}),
+    )
+
+    with pytest.raises(ConnectedError) as connected:
+        await backend.connect_tcp("dual.example", 443)
+
+    assert connected.value.host == "93.184.216.34"
+
+
+async def test_backend_reports_failure_when_every_address_fails() -> None:
+    backend = GuardedBackend(
+        resolver=fake_resolver({"down.example": ["93.184.216.34"]}),
+        inner=FlakyBackend({"93.184.216.34"}),
+    )
+
+    with pytest.raises(httpcore2.ConnectError):
+        await backend.connect_tcp("down.example", 443)
+
+
+async def test_guarded_client_asks_for_uncompressed_responses() -> None:
+    async with guarded_client() as client:
+        assert client.headers["accept-encoding"] == "identity"

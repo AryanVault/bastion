@@ -24,8 +24,14 @@ KEY_BYTES = 32
 AUDIT_KEY = "audit.hmac_key"
 STORAGE_KEY = "storage.encryption_key"
 BRAVE_API_KEY = "search.brave.api_key"
+AUDIT_HEAD = "audit.chain_head"
 
 _NAME = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*(?:\.[a-z0-9]+(?:_[a-z0-9]+)*)+$")
+_INSECURE_BACKENDS = ("keyring.backends.fail", "keyring.backends.null", "keyrings.alt")
+
+
+def _unavailable(exc: Exception) -> str:
+    return f"the OS keyring is unavailable ({type(exc).__name__})"
 
 
 def llm_api_key(provider: str) -> str:
@@ -58,19 +64,35 @@ class KeyringStore:
         self._service = service
 
     def _backend(self) -> keyring.backend.KeyringBackend:
-        return self._backend_override or keyring.get_keyring()
+        if self._backend_override is not None:
+            return self._backend_override
+        backend = keyring.get_keyring()
+        module = type(backend).__module__
+        # A plaintext or no-op backend (e.g. selected via PYTHON_KEYRING_BACKEND) would quietly
+        # turn "secrets in the OS keyring" into "secrets in a file" or "no secrets at all".
+        if module.startswith(_INSECURE_BACKENDS):
+            raise VaultError(f"refusing to use the insecure keyring backend {module}")
+        return backend
 
     def get(self, name: str) -> str | None:
-        return self._backend().get_password(self._service, name)
+        try:
+            return self._backend().get_password(self._service, name)
+        except keyring.errors.KeyringError as exc:
+            raise VaultError(_unavailable(exc)) from exc
 
     def set(self, name: str, value: str) -> None:
-        self._backend().set_password(self._service, name, value)
+        try:
+            self._backend().set_password(self._service, name, value)
+        except keyring.errors.KeyringError as exc:
+            raise VaultError(_unavailable(exc)) from exc
 
     def delete(self, name: str) -> None:
         try:
             self._backend().delete_password(self._service, name)
         except keyring.errors.PasswordDeleteError:
             return
+        except keyring.errors.KeyringError as exc:
+            raise VaultError(_unavailable(exc)) from exc
 
 
 class MemoryStore:
@@ -140,3 +162,17 @@ class Vault:
         if len(decoded) != KEY_BYTES:
             raise VaultError(f"stored key '{name}' is corrupt (wrong length)")
         return decoded
+
+
+class VaultAnchor:
+    """Keeps the audit chain head in the OS keyring, outside the database it vouches for."""
+
+    def __init__(self, vault: Vault, name: str = AUDIT_HEAD) -> None:
+        self._vault = vault
+        self._name = name
+
+    def get(self) -> str | None:
+        return self._vault.get(self._name)
+
+    def set(self, value: str) -> None:
+        self._vault.set(self._name, value)
