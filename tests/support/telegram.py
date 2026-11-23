@@ -89,7 +89,10 @@ class FakeTelegramApi:
         self.commands: list[tuple[str, str]] = []
         self.typing = 0
         self.closed = False
-        self.fail_sends = False
+        self.fail_sends = False  # every send fails (a transient 500)
+        self.fail_next_sends = 0  # this many sends fail, then they succeed
+        self.fail_edits = False
+        self.fail_answers = False
         self.idle = asyncio.Event()
         self._next_id = 100
 
@@ -121,7 +124,8 @@ class FakeTelegramApi:
     async def send_message(
         self, chat_id: int, text: str, *, buttons: Sequence[tuple[str, str]] = ()
     ) -> int:
-        if self.fail_sends:
+        if self.fail_sends or self.fail_next_sends > 0:
+            self.fail_next_sends = max(0, self.fail_next_sends - 1)
             raise TelegramError("Telegram API 500: send failed", status=500)
         assert text.strip(), "Telegram rejects empty messages"
         assert utf16_len(text) <= MAX_MESSAGE_CHARS, "message over Telegram's limit"
@@ -130,9 +134,13 @@ class FakeTelegramApi:
         return self._next_id
 
     async def edit_message(self, chat_id: int, message_id: int, text: str) -> None:
+        if self.fail_edits:
+            raise TelegramError("Telegram API 400: message can't be edited", status=400)
         self.edits.append((chat_id, message_id, text))
 
     async def answer_callback(self, callback_id: str, text: str | None = None) -> None:
+        if self.fail_answers:
+            raise TelegramError("Telegram API 400: query is too old", status=400)
         self.answers.append((callback_id, text))
 
     async def send_typing(self, chat_id: int) -> None:

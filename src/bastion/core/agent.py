@@ -160,8 +160,12 @@ class Agent:
         # Fixed for the agent's lifetime: a stable prefix keeps prompt caching effective.
         self._specs = tools.specs()
 
-    async def run_turn(self, conversation: Conversation, user_text: str) -> TurnResult:
-        turn = _Turn(self._start(conversation, user_text))
+    async def run_turn(
+        self, conversation: Conversation, user_text: str, *, from_owner: bool = True
+    ) -> TurnResult:
+        """Run one request. ``from_owner=False`` marks text that quotes someone else (such as
+        a forwarded message): URLs in it are not added to the set the agent may fetch."""
+        turn = _Turn(self._start(conversation, user_text, from_owner=from_owner))
         for _ in range(self._limits.max_steps):
             try:
                 completion = await self._provider.complete(
@@ -199,7 +203,9 @@ class Agent:
 
     # ------------------------------------------------------------- bookkeeping
 
-    def _start(self, conversation: Conversation, user_text: str) -> Conversation:
+    def _start(
+        self, conversation: Conversation, user_text: str, *, from_owner: bool
+    ) -> Conversation:
         now = self._clock().astimezone()
         stamped = f"[{now:%a %Y-%m-%d %H:%M %z}] {user_text}"
         # The owner's words are private: audit their size and hash, not the text.
@@ -209,11 +215,11 @@ class Agent:
                 "conversation": conversation.id,
                 "chars": len(user_text),
                 "sha256": _sha256(user_text),
+                "from_owner": from_owner,
             },
         )
-        return conversation.with_urls(extract_urls(user_text)).append(
-            Message(Role.USER, text=stamped)
-        )
+        urls = extract_urls(user_text) if from_owner else ()
+        return conversation.with_urls(urls).append(Message(Role.USER, text=stamped))
 
     def _record(self, turn: _Turn, completion: Completion) -> None:
         turn.usage = turn.usage + completion.usage

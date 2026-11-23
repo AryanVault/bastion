@@ -2,10 +2,11 @@ import pytest
 
 from bastion.security.redact import Redactor
 from bastion.security.vault import TELEGRAM_OWNER, MemoryStore, Vault, VaultError
-from bastion.telegram.api import Chat, Update
+from bastion.telegram.api import Chat, TelegramError, Update
 from bastion.telegram.pairing import (
     CODE_ALPHABET,
     CODE_LENGTH,
+    MAX_TOTAL_ATTEMPTS,
     Owner,
     PairingError,
     PairingRequest,
@@ -32,12 +33,16 @@ class Ticker:
         return self.now
 
 
-def fake(*batches: list[Update]) -> FakeTelegramApi:
+def fake(*batches: list[Update] | TelegramError) -> FakeTelegramApi:
     return FakeTelegramApi([], *batches, block_when_idle=False)  # first batch: the backlog
 
 
 async def pair(api: FakeTelegramApi) -> PairingRequest | None:
-    return await wait_for_pairing(api, CODE, clock=Ticker(), timeout_seconds=30)
+    return await wait_for_pairing(api, CODE, clock=Ticker(), timeout_seconds=30, sleep=no_wait)
+
+
+async def no_wait(seconds: float) -> None:
+    return None
 
 
 async def test_the_right_code_from_a_private_chat_pairs() -> None:
@@ -74,11 +79,56 @@ async def test_codes_only_count_from_a_person_in_a_private_chat(update: Update) 
 
 
 @pytest.mark.security
-async def test_too_many_wrong_codes_cancel_pairing() -> None:
-    guesses = [message(i, f"/pair WRONG{i:03d}", user_id=STRANGER_ID) for i in range(1, 6)]
-    api = fake(guesses, [message(9, "/pair ABCD-2345")])
+async def test_one_strangers_guesses_cannot_block_the_owner() -> None:
+    guesses = [message(i, f"/pair WRONG{i:03d}", user_id=STRANGER_ID) for i in range(1, 10)]
+    api = fake(guesses, [message(20, "/pair ABCD-2345")])
+
+    request = await pair(api)
+
+    assert request is not None and request.user.id == OWNER_ID
+
+
+@pytest.mark.security
+async def test_a_stranger_who_used_up_their_guesses_cannot_pair_even_with_the_code() -> None:
+    guesses = [message(i, f"/pair WRONG{i:03d}", user_id=STRANGER_ID) for i in range(1, 4)]
+    api = fake(guesses, [message(9, "/pair ABCD-2345", user_id=STRANGER_ID)])
+
+    assert await pair(api) is None
+
+
+@pytest.mark.security
+async def test_a_flood_of_wrong_codes_from_many_accounts_cancels_pairing() -> None:
+    guesses = [message(i, "/pair WRONG999", user_id=10_000 + i) for i in range(MAX_TOTAL_ATTEMPTS)]
+    api = fake(guesses, [message(999, "/pair ABCD-2345")])
 
     with pytest.raises(PairingError, match="too many wrong codes"):
+        await pair(api)
+
+
+@pytest.mark.security
+async def test_arbitrary_text_in_a_code_cannot_crash_pairing() -> None:
+    lone_surrogate = chr(0xD800)
+    api = fake(
+        [message(1, f"/pair {lone_surrogate}", user_id=STRANGER_ID)], [message(2, "/pair ABCD2345")]
+    )
+
+    request = await pair(api)
+
+    assert request is not None and request.user.id == OWNER_ID
+
+
+async def test_network_errors_while_waiting_are_retried() -> None:
+    api = fake(
+        TelegramError("could not reach Telegram (ConnectError)"), [message(2, "/pair ABCD2345")]
+    )
+
+    assert await pair(api) is not None
+
+
+async def test_permanent_errors_while_waiting_are_raised() -> None:
+    api = fake(TelegramError("Telegram API 401: Unauthorized", status=401))
+
+    with pytest.raises(TelegramError):
         await pair(api)
 
 

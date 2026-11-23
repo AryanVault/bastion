@@ -19,7 +19,7 @@ from bastion.common import utc_now
 ISSUER = "Bastion"
 SECRET_CHARS = 32  # base32 characters: 160 bits, the RFC 4226 recommendation
 MIN_SECRET_BYTES = 16
-_CODE = re.compile(r"^\d{6}$")
+_CODE = re.compile(r"^[0-9]{6}$")  # ASCII only: digits from other scripts are refused
 _WHITESPACE = re.compile(r"\s+")
 
 

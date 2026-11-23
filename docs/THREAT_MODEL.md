@@ -78,8 +78,8 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T3 | Agent tricked into fetching `http://169.254.169.254/` or LAN admin pages | Info disclosure / EoP | A1 | SSRF guard: resolve, reject private/loopback/link-local/reserved ranges, pin IP, re-check redirects (C7) |
 | T4 | Injected text makes the agent delete mail or calendar events | Tampering | A1 | `destructive` tier: approval plus TOTP step-up (C1, C4, C5) |
 | T5 | Owner approves "send to alice@" but the agent sends to someone else | Tampering | A1 | Approval bound to a hash of the exact tool arguments; single use; expiring (C4) |
-| T6 | Stranger commands the bot | Spoofing / EoP | A2 | Pairing needs a one-time code from the terminal *and* the owner's confirmation there; the owner (user and private chat) is kept in the OS keyring; every other user, group or chat is dropped without a reply and audited with a rate limit (C6) |
-| T7 | Hijacked Telegram approves high-risk actions | Spoofing | A3 | TOTP step-up for high-risk tiers, each code usable once (C5); `/stop` kill switch that only the computer can release (`bastion resume`); `bastion telegram unpair` (C6, C11) |
+| T6 | Stranger commands the bot | Spoofing / EoP | A2 | Pairing needs a one-time code from the terminal *and* the owner's confirmation there, with a guess limit per sender; the owner (user and private chat) is kept in the OS keyring; every other user, group or chat is dropped without a reply and audited with a rate limit (C6) |
+| T7 | Hijacked Telegram approves high-risk actions | Spoofing | A3 | TOTP step-up for high-risk tiers, each code usable once; five wrong codes in an hour engage the kill switch (C5); `/stop` kill switch that only the computer can release (`bastion resume`); `bastion telegram unpair` stops a running bot at its next update (C6, C11) |
 | T8 | Injected instruction stored in memory and replayed in every future session | Tampering (persistence) | A1 | Memory provenance bound into the ciphertext; tainted memories come back as untrusted data; caps on untrusted memories; trusted memories always rank first (C12) |
 | T9 | Secrets leak into logs, audit entries, or model context | Info disclosure | A1, A5 | Keyring-only storage (C8); redaction filter on all log and audit output (C8); tools never return credentials |
 | T10 | Token theft from disk | Info disclosure | A5 | OS keyring (C8); AES-GCM field encryption for sensitive DB fields (C13) |
@@ -95,7 +95,7 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T20 | Crafted HTML makes the parser burn CPU for minutes, freezing the agent and every timeout with it | DoS | A1 | CPython 3.13.6+ required (linear-time `html.parser`; earlier 3.13 releases are quadratic on malformed input); parse-size cap; parsing runs off the event loop; regression test (C7) |
 | T21 | Attacker-controlled text reaches the model through an *error* message (an echoed `Content-Type` or redirect target), unfenced and without tainting | Tampering | A1 | Tool errors never echo remote data; failures after contacting an untrusted party taint the conversation and are fenced like output (C2) |
 | T22 | Instructions hidden in invisible Unicode ("ASCII smuggling" with tag characters, zero-width or bidi characters): readable by the model, invisible to the owner | Tampering | A1 | Invisible characters are stripped from all untrusted tool output before the model sees it, and revealed as `\uXXXX` in approval prompts and the audit viewer (C16) |
-| T23 | The owner forwards a message written by someone else ("summarise this"), carrying an injection into the trusted channel | Tampering | A1 | Forwarded and bot-generated messages are fenced as untrusted and taint the conversation; they never count as commands or authenticator codes (C2, C6) |
+| T23 | The owner forwards a message written by someone else ("summarise this"), carrying an injection into the trusted channel | Tampering | A1 | Forwarded and bot-generated messages are fenced as untrusted and taint the conversation; their links are not made fetchable; they never count as commands or authenticator codes (C2, C6, C7) |
 | T24 | The bot token leaks (it sits in every Bot API URL) through request logs, error messages or a proxy, letting an attacker read or answer the owner's chat | Info disclosure / Spoofing | A4, A5 | Token only in the OS keyring and entered at a hidden prompt; HTTP request logging silenced; transport errors re-raised without their text or cause; proxy variables ignored; a second poller (409 Conflict) raises an alarm to revoke the token (C6, C8) |
 | T25 | Requests queued while Bastion was offline run hours later, when the owner no longer expects them | Tampering | A3 | The update backlog is discarded at startup; the owner is told so (C6) |
 | T26 | A hijacked account or a stuck client floods the bot, running up model costs | DoS | A2, A3 | One request at a time; a per-owner token bucket; strangers' audit entries capped per hour; `/stop` (C6, C11) |
@@ -145,6 +145,14 @@ Where each control lives in the code: [ARCHITECTURE.md](ARCHITECTURE.md#security
   holds only the owner's Telegram account.
 - **Pending approvals do not survive a restart.** They live in the daemon's memory; restarting it
   abandons them, which counts as "no" (fail closed).
+- **Approvals never hide anything, so some are refused.** A Telegram approval prompt shows the
+  exact arguments. If they contain something that looks like a secret (an API key, token,
+  password or private key), the action is refused rather than shown redacted, because a redacted
+  prompt could hide what the approval really binds. An email that legitimately contains such text
+  has to be sent another way.
+- **Authenticator replay across a restart.** Codes are single-use while the daemon runs; a code
+  captured in the last minute or so could be replayed if the daemon restarted in between. That
+  needs local access to restart it (and local access already reaches the TOTP secret).
 - **Audit records are summaries.** Tool arguments are logged as lengths and short hashes (plus
   safe fields such as a URL's host), so the log proves what ran without becoming a plaintext copy
   of private data. The trade-off: the log alone cannot show the full text of past arguments.

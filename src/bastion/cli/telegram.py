@@ -98,7 +98,10 @@ async def _pair(
             audit.append("telegram.pairing_rejected", {"user_id": request.user.id})
             raise _fail(console, "Not paired.")
         owner = Owner(request.user.id, request.chat.id)
-        save_owner(vault, owner)
+        try:
+            save_owner(vault, owner)
+        except VaultError as exc:
+            raise _fail(console, f"Could not save the pairing: {exc}") from exc
         audit.append("telegram.paired", {"user_id": owner.user_id}, checkpoint=True)
         # Pairing has already succeeded; the welcome message is a courtesy.
         with contextlib.suppress(TelegramError):
@@ -131,7 +134,13 @@ def pair() -> None:
             f"The code expires in {PAIRING_TTL_SECONDS // 60} minutes. Waiting..."
         )
         try:
-            asyncio.run(_pair(deps.bot_api(token), code, console, audit, vault))
+            api = deps.bot_api(token)
+        except ValueError as exc:
+            raise _fail(
+                console, "The stored bot token is malformed. Run: bastion telegram setup"
+            ) from exc
+        try:
+            asyncio.run(_pair(api, code, console, audit, vault))
         except PairingError as exc:
             audit.append("telegram.pairing_failed", {"reason": str(exc)})
             raise _fail(console, f"Not paired: {exc}.") from exc
@@ -152,7 +161,7 @@ def unpair() -> None:
         except VaultError as exc:
             raise _fail(console, str(exc)) from exc
         audit.append("telegram.unpaired", {}, checkpoint=True)
-    console.print("Unpaired. Restart [bold]bastion daemon[/] if it is running.")
+    console.print("Unpaired. A running [bold]bastion daemon[/] stops at its next message.")
 
 
 def _show_secret(console: Console, secret: str) -> None:
@@ -184,11 +193,14 @@ def totp() -> None:
         verifier = TotpVerifier(secret)
         for _ in range(MAX_ENROLL_ATTEMPTS):
             if verifier.verify(str(typer.prompt("Enter the 6-digit code your app shows"))):
-                vault.set(TOTP_SECRET, secret)
+                try:
+                    vault.set(TOTP_SECRET, secret)
+                except VaultError as exc:
+                    raise _fail(console, f"Could not save the authenticator: {exc}") from exc
                 audit.append("totp.enrolled", {}, checkpoint=True)
                 console.print(
-                    "[green]Authenticator set up.[/] Restart [bold]bastion daemon[/] if it is "
-                    "running."
+                    "[green]Authenticator set up.[/] A running [bold]bastion daemon[/] stops at "
+                    "its next message; start it again to use the new authenticator."
                 )
                 return
             console.print(

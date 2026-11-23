@@ -9,11 +9,18 @@ import pytest
 
 from bastion.security.approvals import ApprovalRequest, ApprovalService
 from bastion.security.audit import AuditLog
-from bastion.security.redact import REDACTED, Redactor
+from bastion.security.redact import Redactor
 from bastion.security.totp import TotpVerifier
 from bastion.storage.db import connect
-from bastion.telegram.api import CallbackQuery, TelegramError
-from bastion.telegram.approver import MAX_CODE_ATTEMPTS, NO_AUTHENTICATOR, TelegramApprover
+from bastion.telegram.api import CallbackQuery
+from bastion.telegram.approver import (
+    LOCKED_OUT,
+    MAX_CODE_ATTEMPTS,
+    MAX_FAILED_CODES,
+    NO_AUTHENTICATOR,
+    REFUSED_SENSITIVE,
+    TelegramApprover,
+)
 from bastion.telegram.pairing import Owner
 from bastion.tools.base import RiskTier
 from support.fakes import EmailArgs
@@ -57,8 +64,10 @@ def make_approver(
 async def start(
     approver: TelegramApprover, api: FakeTelegramApi, request: ApprovalRequest
 ) -> asyncio.Task[bool]:
+    """Ask for approval in the background; returns once its prompt (with buttons) is sent."""
+    prompts = sum(1 for sent in api.sent if sent.buttons)
     task = asyncio.create_task(approver.request_approval(request))
-    await settle(lambda: any(sent.buttons for sent in api.sent) or task.done())
+    await settle(lambda: sum(1 for sent in api.sent if sent.buttons) > prompts or task.done())
     return task
 
 
@@ -168,16 +177,43 @@ async def test_long_prompts_are_split_with_buttons_on_the_last_part(audit: Audit
 
 
 @pytest.mark.security
-async def test_known_secrets_are_redacted_from_the_prompt(audit: AuditLog) -> None:
+async def test_arguments_that_look_secret_are_refused_not_hidden(audit: AuditLog) -> None:
+    # Redacting the prompt would let the owner approve arguments they never saw, because the
+    # approval binds the real ones; showing them would send the secret to Telegram.
     api = FakeTelegramApi()
     redactor = Redactor()
     redactor.register_secret("opaque-secret-value-123")
     approver = make_approver(api, audit, redactor=redactor)
-    task = await start(approver, api, make_request(body="key opaque-secret-value-123"))
 
-    assert "opaque-secret-value-123" not in api.last_keyboard().text
-    assert REDACTED in api.last_keyboard().text
-    task.cancel()
+    approved = await approver.request_approval(make_request(body="key opaque-secret-value-123"))
+
+    assert approved is False
+    assert not any(sent.buttons for sent in api.sent)
+    assert all("opaque-secret-value-123" not in text for text in api.texts)
+    assert REFUSED_SENSITIVE in api.texts[-1]
+    assert "approval.refused_secret" in events(audit)
+
+
+@pytest.mark.security
+async def test_a_secret_pattern_spanning_fields_cannot_hide_a_recipient(audit: AuditLog) -> None:
+    # A private-key pattern matching from one field to another would blank out everything in
+    # between (here, the real recipient) while the approval still binds it.
+    marker = "PRIVATE " + "KEY"  # split so secret scanners don't flag this fake fixture
+    api = FakeTelegramApi()
+    approver = make_approver(api, audit)
+    request = ApprovalService().create(
+        tool="send_email",
+        tier=RiskTier.SEND,
+        args=EmailArgs(
+            to=f"-----BEGIN {marker}-----", body=f"attacker@evil.example -----END {marker}-----"
+        ),
+        summary="Send an email",
+        reason="needs approval",
+        step_up=False,
+    )
+
+    assert await approver.request_approval(request) is False
+    assert not any(sent.buttons for sent in api.sent)
 
 
 async def test_withdrawing_cancels_the_request_and_updates_the_prompt(audit: AuditLog) -> None:
@@ -192,15 +228,9 @@ async def test_withdrawing_cancels_the_request_and_updates_the_prompt(audit: Aud
     assert api.edits[-1][2].endswith("Cancelled.")
 
 
-async def test_a_failed_edit_falls_back_to_a_new_message(
-    audit: AuditLog, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_failed_edit_falls_back_to_a_new_message(audit: AuditLog) -> None:
     api = FakeTelegramApi()
-
-    async def broken_edit(chat_id: int, message_id: int, text: str) -> None:
-        raise TelegramError("Telegram API 400: message can't be edited", status=400)
-
-    monkeypatch.setattr(api, "edit_message", broken_edit)
+    api.fail_edits = True
     approver = make_approver(api, audit)
     task = await start(approver, api, make_request())
     prompt = api.last_keyboard()
@@ -264,3 +294,90 @@ async def test_codes_are_ignored_when_nothing_awaits_one(audit: AuditLog) -> Non
 
     assert approver.awaiting_code() is False
     assert await approver.handle_code("123456") is False
+
+
+@pytest.mark.security
+async def test_wrong_codes_across_requests_trigger_a_lockout(audit: AuditLog) -> None:
+    api = FakeTelegramApi()
+    approver = make_approver(api, audit)
+
+    # Three wrong codes deny the first request; two more on the next one reach the limit.
+    for wrong in (MAX_CODE_ATTEMPTS, MAX_FAILED_CODES - MAX_CODE_ATTEMPTS):
+        task = await start(approver, api, make_request(step_up=True))
+        prompt = api.last_keyboard()
+        await approver.handle_callback(query(prompt.button("Approve"), prompt.message_id))
+        for _ in range(wrong):
+            await approver.handle_code("000000")
+        assert await task is False
+
+    assert approver.consume_lockout() is True
+    assert approver.consume_lockout() is False  # reported once
+    assert "approval.step_up_lockout" in events(audit)
+    assert LOCKED_OUT in api.edits[-1][2]
+
+
+async def test_wrong_codes_spread_over_hours_do_not_lock_out(audit: AuditLog) -> None:
+    api = FakeTelegramApi()
+    clock = {"now": 0.0}
+    approver = TelegramApprover(
+        api,
+        OWNER,
+        audit=audit,
+        totp=TotpVerifier(SECRET, clock=lambda: NOW),
+        redactor=Redactor(),
+        monotonic=lambda: clock["now"],
+    )
+
+    for _ in range(3):
+        task = await start(approver, api, make_request(step_up=True))
+        prompt = api.last_keyboard()
+        await approver.handle_callback(query(prompt.button("Approve"), prompt.message_id))
+        await approver.handle_code("000000")
+        await approver.handle_code("000000")
+        await approver.handle_code("000000")
+        assert await task is False
+        clock["now"] += 2 * 3600
+
+    assert approver.consume_lockout() is False
+
+
+async def test_telegram_failures_never_change_a_decision(audit: AuditLog) -> None:
+    api = FakeTelegramApi()
+    approver = make_approver(api, audit)
+    task = await start(approver, api, make_request())
+    prompt = api.last_keyboard()
+    api.fail_answers = api.fail_edits = api.fail_sends = True
+
+    await approver.handle_callback(query(prompt.button("Approve"), prompt.message_id))
+
+    assert await task is True
+
+
+async def test_an_expiry_with_telegram_down_is_still_a_quiet_no(audit: AuditLog) -> None:
+    api = FakeTelegramApi()
+    approver = make_approver(api, audit)
+    task = asyncio.create_task(
+        approver.request_approval(make_request(ttl=timedelta(milliseconds=50)))
+    )
+    await settle(lambda: any(sent.buttons for sent in api.sent))
+    api.fail_edits = api.fail_sends = True
+
+    assert await task is False
+
+
+async def test_transient_send_failures_are_retried(audit: AuditLog) -> None:
+    api = FakeTelegramApi()
+    api.fail_next_sends = 2
+    sleeps: list[float] = []
+
+    async def no_wait(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    approver = TelegramApprover(
+        api, OWNER, audit=audit, totp=None, redactor=Redactor(), sleep=no_wait
+    )
+    task = asyncio.create_task(approver.request_approval(make_request()))
+    await settle(lambda: any(sent.buttons for sent in api.sent))
+
+    assert sleeps == [1.0, 2.0]
+    task.cancel()

@@ -9,11 +9,13 @@ The owner record is kept in the OS keyring, not the database: whoever is the own
 actions, so changing it must take more than write access to a file.
 """
 
+import asyncio
 import hmac
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 
 from bastion.security.vault import TELEGRAM_OWNER, Vault, VaultError
 from bastion.telegram.api import (
@@ -21,14 +23,18 @@ from bastion.telegram.api import (
     Chat,
     IncomingMessage,
     TelegramApi,
+    TelegramError,
     User,
+    is_transient,
+    retry_transient,
     skip_backlog,
 )
 
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O or 1/I to misread
-CODE_LENGTH = 8  # 40 bits; with at most MAX_ATTEMPTS guesses, guessing is hopeless
+CODE_LENGTH = 8  # 40 bits: even MAX_TOTAL_ATTEMPTS guesses have a negligible chance
 PAIRING_TTL_SECONDS = 600
-MAX_ATTEMPTS = 5
+MAX_ATTEMPTS = 3  # wrong codes per sender, then that sender is ignored
+MAX_TOTAL_ATTEMPTS = 30  # wrong codes from everyone, then pairing is abandoned
 
 
 class PairingError(Exception):
@@ -85,6 +91,14 @@ def _normalize(code: str) -> str:
     return code.upper().replace("-", "").replace(" ", "")
 
 
+def _matches(offered: str, code: str) -> bool:
+    candidate = _normalize(offered)
+    # Compared as ASCII bytes: arbitrary sender text (even a lone surrogate) cannot crash it.
+    return candidate.isascii() and hmac.compare_digest(
+        candidate.encode("ascii"), code.encode("ascii")
+    )
+
+
 @dataclass(frozen=True)
 class PairingRequest:
     user: User
@@ -108,24 +122,38 @@ async def wait_for_pairing(
     code: str,
     *,
     timeout_seconds: float = PAIRING_TTL_SECONDS,
-    max_attempts: int = MAX_ATTEMPTS,
     clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> PairingRequest | None:
-    """Wait for ``/pair <code>``; returns who sent it, or None once the code has expired."""
+    """Wait for ``/pair <code>``; returns who sent it, or None once the code has expired.
+
+    Each sender gets ``MAX_ATTEMPTS`` guesses, after which their codes are ignored, so one
+    stranger cannot cancel the owner's pairing. Pairing is abandoned only if wrong codes pour in
+    from many accounts (``MAX_TOTAL_ATTEMPTS``).
+    """
     deadline = clock() + timeout_seconds
-    offset = await skip_backlog(api)
-    attempts = 0
+    offset = await retry_transient(partial(skip_backlog, api), attempts=3, sleep=sleep)
+    guesses: dict[int, int] = {}
     while (remaining := deadline - clock()) > 0:
-        updates = await api.get_updates(offset, max(1, min(POLL_TIMEOUT, int(remaining))))
+        try:
+            updates = await api.get_updates(offset, max(1, min(POLL_TIMEOUT, int(remaining))))
+        except TelegramError as exc:
+            if not is_transient(exc):
+                raise
+            await sleep(min(5.0, max(remaining, 0.0)))
+            continue
         for update in updates:
             offset = update.update_id + 1
             message = update.message
             offered = _offered_code(message)
             if offered is None or message is None or message.sender is None:
                 continue
-            attempts += 1
-            if hmac.compare_digest(_normalize(offered).encode(), code.encode()):
+            sender = message.sender.id
+            if guesses.get(sender, 0) >= MAX_ATTEMPTS:
+                continue
+            if _matches(offered, code):
                 return PairingRequest(message.sender, message.chat)
-            if attempts >= max_attempts:
+            guesses[sender] = guesses.get(sender, 0) + 1
+            if sum(guesses.values()) >= MAX_TOTAL_ATTEMPTS:
                 raise PairingError("too many wrong codes were sent, so pairing was cancelled")
     return None

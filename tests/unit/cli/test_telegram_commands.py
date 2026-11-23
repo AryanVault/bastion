@@ -22,8 +22,9 @@ from bastion.security.vault import (
     Vault,
 )
 from bastion.storage.db import connect
-from bastion.telegram.api import TelegramApi, TelegramError, User
+from bastion.telegram.api import BotApi, TelegramApi, TelegramError, Update, User
 from bastion.telegram.bot import HELP
+from bastion.telegram.pairing import MAX_TOTAL_ATTEMPTS
 from support.fakes import ScriptedProvider
 from support.telegram import OWNER_ID, STRANGER_ID, FakeTelegramApi, message
 
@@ -159,9 +160,11 @@ def test_pairing_is_refused_when_the_owner_does_not_recognise_the_sender(env: En
 
 
 @pytest.mark.security
-def test_pairing_stops_after_too_many_wrong_codes(env: Env) -> None:
+def test_pairing_stops_after_a_flood_of_wrong_codes(env: Env) -> None:
     env.store.set(TELEGRAM_TOKEN, TOKEN)
-    guesses = [message(i, f"/pair GUESS{i:03d}", user_id=STRANGER_ID) for i in range(1, 6)]
+    guesses = [
+        message(i, "/pair GUESS999", user_id=20_000 + i) for i in range(1, MAX_TOTAL_ATTEMPTS + 1)
+    ]
     env.use_api(FakeTelegramApi([], guesses, block_when_idle=False))
 
     result = run(["telegram", "pair"])
@@ -170,6 +173,19 @@ def test_pairing_stops_after_too_many_wrong_codes(env: Env) -> None:
     assert "too many wrong codes" in flat(result)
     assert env.store.get(TELEGRAM_OWNER) is None
     assert "telegram.pairing_failed" in env.events()
+
+
+def test_a_malformed_stored_token_is_reported(env: Env) -> None:
+    env.store.set(TELEGRAM_TOKEN, "not-a-token")
+    env.monkeypatch.setattr(deps, "provider_override", lambda: ScriptedProvider())
+    env.monkeypatch.setattr(deps, "bot_api", BotApi)
+
+    pairing = run(["telegram", "pair"])
+    env.store.set(TELEGRAM_OWNER, f"{OWNER_ID}:{OWNER_ID}")
+    serving = run(["daemon"])
+
+    assert pairing.exit_code == 1 and "malformed" in flat(pairing)
+    assert serving.exit_code == 1 and "bot token" in flat(serving)
 
 
 def test_pairing_reports_an_expired_code(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -318,3 +334,24 @@ def test_secrets_status_lists_the_telegram_entries(env: Env) -> None:
     result = run(["secrets", "status"])
 
     assert TELEGRAM_TOKEN in result.output and TOTP_SECRET in result.output
+
+
+@pytest.mark.security
+def test_unpairing_stops_a_running_daemon(env: Env) -> None:
+    paired(env)
+    env.monkeypatch.setattr(deps, "provider_override", lambda: ScriptedProvider())
+
+    class UnpairedMidway(FakeTelegramApi):
+        async def get_updates(self, offset: int | None, wait_seconds: int) -> list[Update]:
+            if len(self.polls) == 1:  # after startup: the owner runs `bastion telegram unpair`
+                env.store.delete(TELEGRAM_OWNER)
+            return await super().get_updates(offset, wait_seconds)
+
+    api = env.use_api(UnpairedMidway([], [message(2, "delete everything")]))
+
+    result = run(["daemon"])
+
+    assert result.exit_code == 1
+    assert "account or the authenticator changed" in flat(result)
+    assert len(api.texts) == 1 and api.texts[0].startswith("Bastion is online")
+    assert api.closed

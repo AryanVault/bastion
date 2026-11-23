@@ -14,9 +14,10 @@ dropped, but the update itself is still returned so the poll loop can acknowledg
 update must never wedge the bot.
 """
 
+import asyncio
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -29,6 +30,8 @@ POLL_TIMEOUT = 50  # seconds a getUpdates call may wait for new updates
 MAX_MESSAGE_CHARS = 4096  # counted in UTF-16 code units
 MAX_CALLBACK_BYTES = 64
 MAX_CALLBACK_ANSWER_CHARS = 200
+SEND_ATTEMPTS = 3
+MAX_RETRY_WAIT_SECONDS = 60.0
 ALLOWED_UPDATES = ("message", "callback_query")
 
 _TOKEN = re.compile(r"^\d{5,15}:[A-Za-z0-9_-]{30,80}$")
@@ -359,6 +362,38 @@ class BotApi:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+def is_transient(exc: TelegramError) -> bool:
+    """Worth retrying: network failures, rate limits and Telegram server errors."""
+    return exc.status is None or exc.status == 429 or exc.status >= 500
+
+
+async def retry_transient[T](
+    call: Callable[[], Awaitable[T]],
+    *,
+    attempts: int | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    on_retry: Callable[[TelegramError, float], None] | None = None,
+) -> T:
+    """Run ``call``, retrying transient failures with exponential backoff.
+
+    ``attempts=None`` retries until it succeeds (for startup, where the network may come up
+    after Bastion). Permanent errors (a rejected token, a bad request) are raised at once.
+    """
+    delay, attempt = 1.0, 0
+    while True:
+        attempt += 1
+        try:
+            return await call()
+        except TelegramError as exc:
+            if not is_transient(exc) or (attempts is not None and attempt >= attempts):
+                raise
+            wait = min(max(delay, exc.retry_after or 0.0), MAX_RETRY_WAIT_SECONDS)
+            if on_retry is not None:
+                on_retry(exc, wait)
+            await sleep(wait)
+            delay = min(delay * 2, MAX_RETRY_WAIT_SECONDS)
 
 
 async def skip_backlog(api: TelegramApi) -> int | None:

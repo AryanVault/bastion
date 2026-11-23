@@ -104,3 +104,11 @@ def test_the_provisioning_uri_names_the_issuer() -> None:
 )
 def test_looks_like_code(text: str, expected: bool) -> None:
     assert looks_like_code(text) is expected
+
+
+@pytest.mark.security
+def test_digits_from_other_scripts_are_refused_not_crashing() -> None:
+    arabic_indic = "".join(chr(0x0660 + int(d)) for d in code_at(NOW))  # the same code
+
+    assert not looks_like_code(arabic_indic)
+    assert not TotpVerifier(SECRET, clock=Clock()).verify(arabic_indic)

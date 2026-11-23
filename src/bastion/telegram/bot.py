@@ -3,21 +3,27 @@
 - **Outbound only.** Bastion long-polls api.telegram.org; it never opens a port.
 - **Owner only.** Every update is checked against the paired owner (user *and* private chat)
   before anything else happens. Everything else is dropped without a reply, and audited with a
-  rate limit so strangers cannot flood the log.
+  rate limit so strangers cannot flood the log. If the owner or authenticator is changed on the
+  computer (``bastion telegram unpair|pair|totp``), the running bot stops at the next update.
 - **One request at a time.** A request runs as a background task, so the poll loop keeps
   receiving approval taps, authenticator codes and ``/stop`` while the agent works.
 - **Forwarded messages are untrusted.** Their words are someone else's: they are fenced like web
-  content and taint the conversation, so they cannot steer sends or deletions on their own.
-- **Kill switch.** ``/stop`` cancels the running request and refuses all work until the owner
-  runs ``bastion resume`` on the computer.
+  content, taint the conversation, and their links are not made fetchable.
+- **Kill switch.** ``/stop`` (or too many wrong authenticator codes) cancels the running request
+  and refuses all work until the owner runs ``bastion resume`` on the computer.
 - **Off-machine audit anchor.** The chain head is sent to the owner at startup and daily, so a
   rewritten log can be caught later with ``bastion audit verify --checkpoint``.
+- **Always on.** Network failures are retried with backoff; a failure handling one update, or
+  writing one audit entry, is contained instead of stopping the bot.
 """
 
 import asyncio
 import math
+import sqlite3
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from functools import partial
+from typing import Any
 
 from bastion.common import utc_now
 from bastion.config import TelegramSettings
@@ -31,12 +37,14 @@ from bastion.security.redact import Redactor
 from bastion.security.totp import looks_like_code
 from bastion.telegram.api import (
     POLL_TIMEOUT,
+    SEND_ATTEMPTS,
     CallbackQuery,
     IncomingMessage,
     TelegramApi,
     TelegramError,
     Update,
     User,
+    retry_transient,
     skip_backlog,
 )
 from bastion.telegram.approver import TelegramApprover
@@ -59,6 +67,7 @@ HELP = """Commands:
 /help - this message"""
 STOPPED = 'Bastion is stopped. To resume it, run "bastion resume" on your computer.'
 BUSY = "Still working on your previous request. Send /cancel to abandon it."
+NO_CODE_EXPECTED = "No approval is waiting for a code."
 TAINT_NOTICE = (
     "\n\n(Untrusted content is now in this conversation, so sending and deleting need your "
     "approval. Send /new to start fresh.)"
@@ -68,8 +77,13 @@ FORWARD_PREAMBLE = "I forwarded you this message from someone else:\n"
 DIGEST_INTERVAL_SECONDS = 24 * 60 * 60
 TYPING_INTERVAL_SECONDS = 4.5
 MAX_BACKOFF_SECONDS = 60.0
+SHUTDOWN_GRACE_SECONDS = 5.0
 REJECTION_WINDOW_SECONDS = 3600.0
 MAX_REJECTIONS_AUDITED = 20  # distinct senders per window
+
+
+class ConfigurationChanged(Exception):
+    """The paired owner or the authenticator changed on the computer: the bot must restart."""
 
 
 def _command(text: str) -> str | None:
@@ -92,11 +106,11 @@ class TelegramBot:
         redactor: Redactor,
         settings: TelegramSettings,
         model_label: str,
+        still_valid: Callable[[], bool] = lambda: True,
         warn: Callable[[str], None] = lambda message: None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        self._sleep = sleep
         self._api = api
         self._owner = owner
         self._agent = agent
@@ -106,20 +120,27 @@ class TelegramBot:
         self._redactor = redactor
         self._settings = settings
         self._model_label = model_label
+        self._still_valid = still_valid
         self._warn = warn
         self._monotonic = monotonic
+        self._sleep = sleep
         self._bucket = TokenBucket(settings.message_burst, settings.messages_per_hour, monotonic)
         self._conversation = Conversation.new()
         self._last_activity = monotonic()
         self._turn: asyncio.Task[None] | None = None
         self._rejections: dict[int, float] = {}
         self._conflict_audited_at: float | None = None
+        # Set if /stop could not be saved to disk: the bot then stays stopped until restarted.
+        self._halted = False
 
     # ---------------------------------------------------------------- lifecycle
 
     async def run(self) -> None:
-        """Poll until cancelled (Ctrl+C) or until Telegram rejects the token."""
-        offset = await skip_backlog(self._api)
+        """Poll until cancelled (Ctrl+C), until Telegram rejects the token, or until the owner
+        or authenticator changes on the computer (``ConfigurationChanged``)."""
+        offset = await retry_transient(
+            partial(skip_backlog, self._api), sleep=self._sleep, on_retry=self._unreachable
+        )
         await self._quietly(self._api.set_commands(COMMANDS))
         self._audit.append("session.start", {"channel": "telegram"}, checkpoint=True)
         await self._quietly(self._say(self._online_message()))
@@ -128,13 +149,28 @@ class TelegramBot:
             await self._poll(offset)
         finally:
             digest.cancel()
-            self._cancel_turn()
-            self._audit.append("session.end", {"channel": "telegram"}, checkpoint=True)
+            await self._shut_down()
+            self._note("session.end", {"channel": "telegram"}, checkpoint=True)
 
     async def wait_for_turn(self) -> None:
         """Wait for the running request, if any, to finish (or be cancelled)."""
         if self._turn is not None:
             await asyncio.wait([self._turn])
+
+    async def _shut_down(self) -> None:
+        """Abandon the running request and its approval, and say so, within a short grace."""
+        withdrawn = self._approver.withdraw()
+        self._cancel_turn()
+        if self._turn is not None:
+            await asyncio.wait([self._turn], timeout=SHUTDOWN_GRACE_SECONDS)
+        if withdrawn:
+            notice = asyncio.ensure_future(
+                self._approver.report_withdrawn(withdrawn, "Cancelled: Bastion shut down.")
+            )
+            await asyncio.wait([notice], timeout=SHUTDOWN_GRACE_SECONDS)
+
+    def _unreachable(self, exc: TelegramError, wait: float) -> None:
+        self._warn(f"Cannot reach Telegram ({exc}); retrying in {wait:.0f}s.")
 
     async def _poll(self, offset: int | None) -> None:
         backoff = 1.0
@@ -150,6 +186,10 @@ class TelegramBot:
             backoff = 1.0
             for update in updates:
                 offset = update.update_id + 1
+                if not self._still_valid():
+                    raise ConfigurationChanged(
+                        "the paired Telegram account or the authenticator changed"
+                    )
                 await self._dispatch(update)
 
     def _poll_delay(self, exc: TelegramError, backoff: float) -> float:
@@ -160,7 +200,7 @@ class TelegramBot:
                 or now - self._conflict_audited_at > REJECTION_WINDOW_SECONDS
             ):
                 self._conflict_audited_at = now
-                self._audit.append("telegram.conflict", {"error": str(exc)})
+                self._note("telegram.conflict", {"error": str(exc)})
                 self._warn(
                     "Another program is reading this bot's messages. If it is not another "
                     "copy of Bastion, your bot token may be stolen: revoke it in @BotFather."
@@ -171,11 +211,16 @@ class TelegramBot:
         try:
             await self.handle_update(update)
         except TelegramError as exc:
-            self._audit.append("telegram.send_failed", {"error": str(exc)})
+            self._note("telegram.send_failed", {"error": str(exc)})
         except Exception as exc:  # an always-on bot must survive a bad update
-            self._audit.append(
-                "telegram.update_crash", {"error_type": type(exc).__name__}, checkpoint=True
-            )
+            self._note("telegram.update_crash", {"error_type": type(exc).__name__})
+
+    def _note(self, event: str, data: Mapping[str, Any], *, checkpoint: bool = False) -> None:
+        """Audit from an error path: a locked database must not turn one failure into two."""
+        try:
+            self._audit.append(event, data, checkpoint=checkpoint)
+        except sqlite3.Error as exc:
+            self._warn(f"Could not write the audit entry {event} ({type(exc).__name__}).")
 
     # ------------------------------------------------------------------ updates
 
@@ -203,9 +248,9 @@ class TelegramBot:
         command = None if message.forwarded else _command(text)
         if command is not None:
             await self._on_command(command)
-        elif not message.forwarded and self._approver.awaiting_code() and looks_like_code(text):
-            await self._approver.handle_code(text)
-        elif self._switch.engaged():
+        elif not message.forwarded and looks_like_code(text):
+            await self._on_code(text)
+        elif self._stopped():
             await self._say(STOPPED)
         elif self._busy():
             await self._say(BUSY)
@@ -215,6 +260,13 @@ class TelegramBot:
             await self._say(f"Too many requests. Try again in about {minutes} minute(s).")
         else:
             self._start_turn(text, forwarded=message.forwarded)
+
+    async def _on_code(self, text: str) -> None:
+        # A code is never sent to the model, even when nothing is waiting for one.
+        if not await self._approver.handle_code(text):
+            await self._say(NO_CODE_EXPECTED)
+        if self._approver.consume_lockout():
+            await self._stop("too many wrong authenticator codes")
 
     def _reject(self, sender: User | None, chat_id: int | None, kind: str) -> None:
         """Drop an update from anyone but the owner: no reply, and a rate-limited audit entry."""
@@ -226,7 +278,7 @@ class TelegramBot:
         if key in self._rejections or len(self._rejections) >= MAX_REJECTIONS_AUDITED:
             return
         self._rejections[key] = now
-        self._audit.append(
+        self._note(
             "telegram.rejected",
             {
                 "kind": kind,
@@ -240,10 +292,7 @@ class TelegramBot:
         if command in ("new", "cancel", "stop", "status"):
             self._audit.append("telegram.command", {"command": command})
         if command == "stop":
-            self._switch.engage(via="telegram", at=utc_now())
-            await self._cancel_and_withdraw("Cancelled: Bastion was stopped.")
-            self._audit.append("killswitch.engaged", {"via": "telegram"}, checkpoint=True)
-            await self._say(f"Stopped. {STOPPED}")
+            await self._stop("/stop")
         elif command == "cancel":
             busy = self._busy()
             await self._cancel_and_withdraw("Cancelled.")
@@ -259,7 +308,21 @@ class TelegramBot:
         else:
             await self._say(HELP)
 
+    async def _stop(self, reason: str) -> None:
+        """Engage the kill switch. Work stops first, so a failure to save it fails closed."""
+        await self._cancel_and_withdraw("Cancelled: Bastion was stopped.")
+        try:
+            self._switch.engage(via="telegram", at=utc_now())
+        except OSError as exc:
+            self._halted = True  # still stopped, in memory, until the daemon restarts
+            self._note("killswitch.save_failed", {"error_type": type(exc).__name__})
+        self._note("killswitch.engaged", {"via": "telegram", "reason": reason}, checkpoint=True)
+        await self._say(f"Stopped ({reason}). {STOPPED}")
+
     # -------------------------------------------------------------------- turns
+
+    def _stopped(self) -> bool:
+        return self._halted or self._switch.engaged()
 
     def _busy(self) -> bool:
         return self._turn is not None and not self._turn.done()
@@ -269,8 +332,9 @@ class TelegramBot:
             self._turn.cancel()
 
     async def _cancel_and_withdraw(self, outcome: str) -> None:
+        withdrawn = self._approver.withdraw()
         self._cancel_turn()
-        await self._approver.withdraw_all(outcome)
+        await self._approver.report_withdrawn(withdrawn, outcome)
 
     def _current_conversation(self) -> Conversation:
         now = self._monotonic()
@@ -286,18 +350,22 @@ class TelegramBot:
         if forwarded:
             conversation = conversation.tainted_by(FORWARDED_SOURCE)
             prompt = FORWARD_PREAMBLE + fence_untrusted(strip_invisible(text), FORWARDED_SOURCE)
-        self._turn = asyncio.create_task(self._run_turn(conversation, prompt, was_tainted))
+        self._turn = asyncio.create_task(
+            self._run_turn(conversation, prompt, was_tainted=was_tainted, from_owner=not forwarded)
+        )
 
-    async def _run_turn(self, conversation: Conversation, prompt: str, was_tainted: bool) -> None:
+    async def _run_turn(
+        self, conversation: Conversation, prompt: str, *, was_tainted: bool, from_owner: bool
+    ) -> None:
         await self._quietly(self._api.send_typing(self._owner.chat_id))
         typing = asyncio.create_task(self._keep_typing())
         try:
-            result = await self._agent.run_turn(conversation, prompt)
+            result = await self._agent.run_turn(conversation, prompt, from_owner=from_owner)
         except asyncio.CancelledError:
-            self._audit.append("turn.cancelled", {"conversation": conversation.id}, checkpoint=True)
+            self._note("turn.cancelled", {"conversation": conversation.id}, checkpoint=True)
             raise
         except Exception as exc:  # keep the bot alive; the details go to the audit log
-            self._audit.append(
+            self._note(
                 "turn.crash",
                 {"error_type": type(exc).__name__, "error": str(exc)[:200]},
                 checkpoint=True,
@@ -325,14 +393,15 @@ class TelegramBot:
         # Last line of defence: invisible characters out, known secrets redacted.
         clean = self._redactor.redact(strip_invisible(text))
         for chunk in chunk_text(clean):
-            await self._api.send_message(self._owner.chat_id, chunk)
+            send = partial(self._api.send_message, self._owner.chat_id, chunk)
+            await retry_transient(send, attempts=SEND_ATTEMPTS, sleep=self._sleep)
 
     async def _quietly(self, action: Awaitable[None]) -> None:
         """Run a Telegram call whose failure must not stop the bot; failures are audited."""
         try:
             await action
         except TelegramError as exc:
-            self._audit.append("telegram.send_failed", {"error": str(exc)})
+            self._note("telegram.send_failed", {"error": str(exc)})
 
     def _checkpoint(self) -> str:
         head = self._audit.head()
@@ -349,7 +418,7 @@ class TelegramBot:
             "Bastion is online. Messages sent while it was offline were ignored. "
             "Send /help for commands."
         ]
-        if self._switch.engaged():
+        if self._stopped():
             lines.append(STOPPED)
         if not self._approver.step_up_available:
             lines.append(
@@ -359,12 +428,19 @@ class TelegramBot:
         lines.append(self._checkpoint())
         return "\n\n".join(line for line in lines if line)
 
+    async def send_checkpoint(self) -> None:
+        """Send the audit chain head to the owner. Never raises: the daily loop must go on."""
+        try:
+            checkpoint = self._checkpoint()
+            if checkpoint:
+                await self._say(checkpoint)
+        except (TelegramError, sqlite3.Error) as exc:
+            self._note("telegram.checkpoint_failed", {"error_type": type(exc).__name__})
+
     async def _digest_loop(self) -> None:
         while True:
             await asyncio.sleep(DIGEST_INTERVAL_SECONDS)
-            checkpoint = self._checkpoint()
-            if checkpoint:
-                await self._quietly(self._say(checkpoint))
+            await self.send_checkpoint()
 
     def _status(self) -> str:
         conversation = self._conversation
@@ -377,7 +453,7 @@ class TelegramBot:
                 f"Conversation {conversation.id}: {len(conversation.messages)} messages, "
                 f"context {context}.",
                 "Working on a request." if self._busy() else "Idle.",
-                STOPPED if self._switch.engaged() else "Kill switch: off (/stop engages it).",
+                STOPPED if self._stopped() else "Kill switch: off (/stop engages it).",
                 f"Authenticator for step-up approvals: {authenticator}.",
             ]
         )

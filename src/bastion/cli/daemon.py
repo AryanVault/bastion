@@ -1,6 +1,8 @@
 """``bastion daemon`` runs the always-on Telegram bot; ``bastion resume`` lifts ``/stop``."""
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import typer
 from rich.console import Console
@@ -14,11 +16,18 @@ from bastion.config import bastion_home
 from bastion.runtime import Runtime
 from bastion.security.killswitch import KillSwitch
 from bastion.security.totp import TotpError, TotpVerifier
-from bastion.security.vault import TELEGRAM_TOKEN, TOTP_SECRET, VaultError
-from bastion.telegram.api import TelegramApi, TelegramError
+from bastion.security.vault import TELEGRAM_TOKEN, TOTP_SECRET, Vault, VaultError
+from bastion.telegram.api import TelegramApi, TelegramError, retry_transient
 from bastion.telegram.approver import TelegramApprover
-from bastion.telegram.bot import TelegramBot
+from bastion.telegram.bot import ConfigurationChanged, TelegramBot
 from bastion.telegram.pairing import Owner, load_owner
+
+
+@dataclass(frozen=True)
+class _TelegramConfig:
+    token: str
+    owner: Owner
+    totp_secret: str | None
 
 
 def _fail(console: Console, message: str) -> typer.Exit:
@@ -26,19 +35,20 @@ def _fail(console: Console, message: str) -> typer.Exit:
     return typer.Exit(1)
 
 
-def _telegram_config(runtime: Runtime, console: Console) -> tuple[str, Owner, TotpVerifier | None]:
+def _read_config(vault: Vault) -> tuple[str | None, Owner | None, str | None]:
+    return vault.get(TELEGRAM_TOKEN), load_owner(vault), vault.get(TOTP_SECRET)
+
+
+def _telegram_config(runtime: Runtime, console: Console) -> _TelegramConfig:
     try:
-        token = runtime.vault.get(TELEGRAM_TOKEN)
-        owner = load_owner(runtime.vault)
-        secret = runtime.vault.get(TOTP_SECRET)
-        totp = TotpVerifier(secret) if secret else None
-    except (VaultError, TotpError) as exc:
+        token, owner, secret = _read_config(runtime.vault)
+    except VaultError as exc:
         raise _fail(console, f"Cannot start: {exc}") from exc
     if token is None:
         raise _fail(console, "No Telegram bot yet. Run: bastion telegram setup")
     if owner is None:
         raise _fail(console, "No Telegram account is paired. Run: bastion telegram pair")
-    if totp is None:
+    if secret is None:
         console.print(
             Text(
                 "! No authenticator app is set up, so actions that need one will be refused. "
@@ -46,24 +56,50 @@ def _telegram_config(runtime: Runtime, console: Console) -> tuple[str, Owner, To
                 style="yellow",
             )
         )
-    return token, owner, totp
+    return _TelegramConfig(token, owner, secret)
+
+
+def _unchanged(vault: Vault, config: _TelegramConfig) -> Callable[[], bool]:
+    """Whether the owner and authenticator are still the ones the bot started with.
+
+    Checked before every update, so `bastion telegram unpair` (say, after losing the phone)
+    takes effect at once instead of at the next restart. Fails closed if the keyring is
+    unreadable.
+    """
+
+    def check() -> bool:
+        try:
+            _, owner, secret = _read_config(vault)
+        except VaultError:
+            return False
+        return owner == config.owner and secret == config.totp_secret
+
+    return check
 
 
 async def _serve(
     runtime: Runtime,
     api: TelegramApi,
-    owner: Owner,
+    config: _TelegramConfig,
     totp: TotpVerifier | None,
     console: Console,
 ) -> None:
+    def warn(message: str) -> None:
+        console.print(Text(f"! {message}", style="yellow"))
+
     try:
-        me = await api.get_me()
+        me = await retry_transient(
+            api.get_me,
+            on_retry=lambda exc, wait: warn(
+                f"Cannot reach Telegram ({exc}); retrying in {wait:.0f}s."
+            ),
+        )
         approver = TelegramApprover(
-            api, owner, audit=runtime.audit, totp=totp, redactor=runtime.redactor
+            api, config.owner, audit=runtime.audit, totp=totp, redactor=runtime.redactor
         )
         bot = TelegramBot(
             api=api,
-            owner=owner,
+            owner=config.owner,
             agent=runtime.agent(approver),
             approver=approver,
             audit=runtime.audit,
@@ -71,15 +107,18 @@ async def _serve(
             redactor=runtime.redactor,
             settings=runtime.settings.telegram,
             model_label=f"{runtime.provider.name} / {runtime.provider.model}",
-            warn=lambda message: console.print(Text(f"! {message}", style="yellow")),
+            still_valid=_unchanged(runtime.vault, config),
+            warn=warn,
         )
         console.print(
             f"Bastion is online as @{escape(me.username or me.first_name)}. Ctrl+C stops it."
         )
         await bot.run()
     finally:
-        await api.aclose()
-        await runtime.aclose()
+        try:
+            await api.aclose()
+        finally:
+            await runtime.aclose()
 
 
 def daemon() -> None:
@@ -87,12 +126,19 @@ def daemon() -> None:
     console = Console()
     runtime = open_session_runtime(console)
     try:
-        token, owner, totp = _telegram_config(runtime, console)
+        config = _telegram_config(runtime, console)
+        try:
+            totp = TotpVerifier(config.totp_secret) if config.totp_secret else None
+            api = deps.bot_api(config.token)
+        except (TotpError, ValueError) as exc:
+            raise _fail(console, f"Cannot start: {exc}") from exc
         for notice in runtime.notices:
             console.print(Text(f"! {notice}", style="yellow"))
-        asyncio.run(_serve(runtime, deps.bot_api(token), owner, totp, console))
+        asyncio.run(_serve(runtime, api, config, totp, console))
     except KeyboardInterrupt:
         console.print("Stopped.")
+    except ConfigurationChanged as exc:
+        raise _fail(console, f"Stopped: {exc}. Start it again with: bastion daemon") from exc
     except TelegramError as exc:
         if exc.unauthorized:
             raise _fail(
