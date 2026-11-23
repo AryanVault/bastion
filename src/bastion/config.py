@@ -47,10 +47,20 @@ class LimitSettings(_Strict):
     max_turn_tokens: int = Field(default=500_000, ge=10_000, le=10_000_000)
 
 
+class TelegramSettings(_Strict):
+    # A long-idle conversation is replaced by a fresh one, which also clears its taint.
+    idle_reset_minutes: int = Field(default=240, ge=5, le=10_080)
+    # Requests the bot accepts from the owner: a burst, refilled at a steady hourly rate. This
+    # bounds the cost of a hijacked Telegram account or a stuck client.
+    message_burst: int = Field(default=10, ge=1, le=100)
+    messages_per_hour: int = Field(default=60, ge=1, le=3_600)
+
+
 class Settings(_Strict):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     limits: LimitSettings = Field(default_factory=LimitSettings)
+    telegram: TelegramSettings = Field(default_factory=TelegramSettings)
 
 
 def bastion_home() -> Path:
@@ -77,7 +87,7 @@ def load_settings(home: Path) -> Settings:
 
 def render_config(settings: Settings) -> str:
     """TOML for ``config.toml``. Strings are JSON-escaped, which is valid TOML."""
-    llm, limits = settings.llm, settings.limits
+    llm, limits, telegram = settings.llm, settings.limits, settings.telegram
     lines = [
         "# Bastion configuration. Secrets are NOT stored here: they live in the OS keyring.",
         "# Manage them with: bastion secrets set <name>",
@@ -101,5 +111,12 @@ def render_config(settings: Settings) -> str:
         f"max_steps = {limits.max_steps}",
         f"max_tool_calls = {limits.max_tool_calls}",
         f"max_turn_tokens = {limits.max_turn_tokens}",
+        "",
+        "[telegram]",
+        "# A conversation idle this long is replaced by a fresh one (which clears its taint).",
+        f"idle_reset_minutes = {telegram.idle_reset_minutes}",
+        "# Requests accepted from the owner: a burst, refilled at a steady hourly rate.",
+        f"message_burst = {telegram.message_burst}",
+        f"messages_per_hour = {telegram.messages_per_hour}",
     ]
     return "\n".join(lines) + "\n"

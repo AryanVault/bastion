@@ -5,7 +5,7 @@ from typing import Annotated
 import typer
 
 from bastion import __version__
-from bastion.cli import admin, chat, setup
+from bastion.cli import admin, chat, daemon, setup, telegram
 
 app = typer.Typer(
     name="bastion",
@@ -38,6 +38,9 @@ def main(
 
 app.command("init")(setup.init)
 app.command("chat")(chat.chat)
+app.command("daemon")(daemon.daemon)
+app.command("resume")(daemon.resume)
+app.add_typer(telegram.telegram_app, name="telegram")
 app.add_typer(admin.audit_app, name="audit")
 app.add_typer(admin.secrets_app, name="secrets")
 app.add_typer(admin.policy_app, name="policy")

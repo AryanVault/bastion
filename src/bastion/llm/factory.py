@@ -47,7 +47,10 @@ PRESETS: Mapping[str, ProviderPreset] = MappingProxyType(
         "gemini": ProviderPreset(
             "openai", "https://generativelanguage.googleapis.com/v1beta/openai/", True
         ),
-        "openrouter": ProviderPreset("openai", "https://openrouter.ai/api/v1", True),
+        # OpenRouter model IDs are "<vendor>/<model>", with dots in versions.
+        "openrouter": ProviderPreset(
+            "openai", "https://openrouter.ai/api/v1", True, "anthropic/claude-sonnet-5.5"
+        ),
         "groq": ProviderPreset("openai", "https://api.groq.com/openai/v1", True),
         "mistral": ProviderPreset("openai", "https://api.mistral.ai/v1", True),
         "ollama": ProviderPreset("openai", "http://localhost:11434/v1", False),

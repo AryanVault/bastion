@@ -6,6 +6,7 @@ Callers must use ``deps.secret_store()`` (module attribute access), never
 
 from bastion.llm.types import LLMProvider
 from bastion.security.vault import KeyringStore, SecretStore
+from bastion.telegram.api import BotApi, TelegramApi
 
 
 def secret_store() -> SecretStore:
@@ -14,3 +15,7 @@ def secret_store() -> SecretStore:
 
 def provider_override() -> LLMProvider | None:
     return None
+
+
+def bot_api(token: str) -> TelegramApi:
+    return BotApi(token)

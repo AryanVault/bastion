@@ -60,7 +60,7 @@ def _choose_llm(provider: str | None, model: str | None, base_url: str | None) -
         model = (
             typer.prompt("Model", default=preset.default_model)
             if preset.default_model
-            else typer.prompt("Model")
+            else typer.prompt("Model (exactly as your provider names it)")
         )
     if name == "custom" and base_url is None:
         base_url = typer.prompt("API base URL (https://...)")

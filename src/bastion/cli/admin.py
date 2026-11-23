@@ -15,13 +15,16 @@ from bastion.common import canonical_json
 from bastion.config import DATABASE_FILE, POLICY_FILE, ConfigError, bastion_home, load_settings
 from bastion.llm.factory import PRESETS
 from bastion.runtime import open_audit_log
-from bastion.security.audit import AuditLog
+from bastion.security.audit import MIN_CHECKPOINT_CHARS, AuditLog, parse_checkpoint
 from bastion.security.policy import PolicyError, load_policy
 from bastion.security.redact import Redactor
 from bastion.security.vault import (
     AUDIT_KEY,
     BRAVE_API_KEY,
     STORAGE_KEY,
+    TELEGRAM_OWNER,
+    TELEGRAM_TOKEN,
+    TOTP_SECRET,
     Vault,
     VaultError,
     llm_api_key,
@@ -51,7 +54,8 @@ def _fail(console: Console, message: str) -> typer.Exit:
 
 
 @contextmanager
-def _audit_log(console: Console) -> Iterator[AuditLog]:
+def audit_session(console: Console) -> Iterator[AuditLog]:
+    """The audit log for a one-off CLI command; exits with a message if Bastion is not set up."""
     path = bastion_home() / DATABASE_FILE
     if not path.exists():
         raise _fail(console, "No audit log yet. Run: bastion init")
@@ -68,13 +72,31 @@ def _audit_log(console: Console) -> Iterator[AuditLog]:
 
 
 @audit_app.command("verify")
-def audit_verify() -> None:
+def audit_verify(
+    checkpoint: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--checkpoint",
+            help="A checkpoint recorded elsewhere, as ENTRY:CHAIN (e.g. from the daily "
+            "Telegram message). Repeatable.",
+        ),
+    ] = None,
+) -> None:
     """Check the audit log's HMAC chain for tampering."""
     console = Console()
-    with _audit_log(console) as audit:
-        result = audit.verify()
+    try:
+        checkpoints = [parse_checkpoint(value) for value in checkpoint or ()]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--checkpoint") from exc
+    with audit_session(console) as audit:
+        result = audit.verify(checkpoints)
+        head = audit.head()
     if result.ok:
         console.print(f"[green]OK[/]: {result.entries} entries verified, chain intact.")
+        if checkpoints:
+            console.print(f"{len(checkpoints)} recorded checkpoint(s) matched.")
+        if head is not None:
+            console.print(f"Chain head: {head.seq}:{head.mac[:MIN_CHECKPOINT_CHARS]}")
         return
     console.print(
         f"[red]TAMPERED[/]: entry {result.first_bad_seq}: {escape(result.reason)} "
@@ -91,7 +113,7 @@ def audit_tail(
 ) -> None:
     """Show the most recent audit entries."""
     console = Console()
-    with _audit_log(console) as audit:
+    with audit_session(console) as audit:
         entries = audit.tail(count)
     table = Table("seq", "time (UTC)", "event", "details")
     for entry in entries:
@@ -114,7 +136,15 @@ def _known_secret_names() -> list[str]:
         )
     except ConfigError:
         providers = [name for name, preset in PRESETS.items() if preset.needs_key]
-    return [*(llm_api_key(p) for p in providers), BRAVE_API_KEY, AUDIT_KEY, STORAGE_KEY]
+    return [
+        *(llm_api_key(p) for p in providers),
+        BRAVE_API_KEY,
+        AUDIT_KEY,
+        STORAGE_KEY,
+        TELEGRAM_TOKEN,
+        TELEGRAM_OWNER,
+        TOTP_SECRET,
+    ]
 
 
 @secrets_app.command("set")
