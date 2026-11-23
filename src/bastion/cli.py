@@ -1,13 +1,13 @@
-"""Command-line entry point for Warden."""
+"""Command-line entry point for Bastion."""
 
 from typing import Annotated
 
 import typer
 
-from warden import __version__
+from bastion import __version__
 
 app = typer.Typer(
-    name="warden",
+    name="bastion",
     help="A secure, always-on personal AI agent.",
     no_args_is_help=True,
     add_completion=False,
@@ -16,7 +16,7 @@ app = typer.Typer(
 
 def _print_version(value: bool) -> None:
     if value:
-        typer.echo(f"warden {__version__}")
+        typer.echo(f"bastion {__version__}")
         raise typer.Exit
 
 
@@ -32,4 +32,4 @@ def main(
         ),
     ] = False,
 ) -> None:
-    """Warden: the system, not the model, decides what the agent may do."""
+    """Bastion: the system, not the model, decides what the agent may do."""

@@ -15,7 +15,7 @@ dist/
 coverage.xml
 htmlcov/
 
-# Secrets: never commit. Warden stores secrets in the OS keyring, but guard anyway.
+# Secrets: never commit. Bastion stores secrets in the OS keyring, but guard anyway.
 .env
 .env.*
 !.env.example
@@ -26,7 +26,7 @@ client_secret*.json
 token*.json
 
 # Local runtime state (database, audit log, user policy)
-.warden/
+.bastion/
 *.db
 *.db-wal
 *.db-shm

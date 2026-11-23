@@ -1,8 +1,8 @@
-# Warden Threat Model
+# Bastion Threat Model
 
 Version 0.1, written before the first line of agent code so that the design follows from it.
 
-## 1. What Warden is
+## 1. What Bastion is
 
 A personal agent that runs continuously on the owner's machine (or a small server they control).
 The owner talks to it over Telegram and a local CLI. It can read and draft email (Gmail), read and
@@ -14,7 +14,7 @@ scheduled tasks without the owner present.
 > **The language model is not a security boundary.**
 
 Any text the model reads can steer it: an email, a web page, a calendar invite, a search snippet,
-even a stored memory. No current model reliably resists prompt injection. Warden therefore treats
+even a stored memory. No current model reliably resists prompt injection. Bastion therefore treats
 the model as an **untrusted planner**: it may *propose* actions, but deterministic code outside
 the model decides whether each action is allowed, needs approval, or is refused.
 
@@ -37,14 +37,14 @@ the model decides whether each action is allowed, needs approval, or is refused.
 | **A1. Content attacker** (most likely) | Can put text in front of the agent: sends the owner an email, a calendar invite, or controls a web page the agent reads. Cannot talk to the agent directly. |
 | **A2. Stranger on Telegram** | Finds the bot's username and messages it. |
 | **A3. Telegram account hijacker** | Controls the owner's Telegram session (SIM swap, stolen device, session theft). |
-| **A4. Malicious or compromised dependency** | Code running inside the Warden process via a poisoned package. |
+| **A4. Malicious or compromised dependency** | Code running inside the Bastion process via a poisoned package. |
 | **A5. Local attacker / malware** | Read access to the owner's user files. |
 | **A6. Compromised LLM provider** | Sees prompts; can return arbitrary responses. |
 
 ## 5. Trust boundaries
 
 ```
- [Owner] ──Telegram/CLI──► (B1) ──► Warden core ──► (B3) ──► LLM provider API
+ [Owner] ──Telegram/CLI──► (B1) ──► Bastion core ──► (B3) ──► LLM provider API
                                        │   ▲
                                        │   └── (B2) untrusted content: email bodies, web pages,
                                        │            calendar invites from others, search results
@@ -63,7 +63,7 @@ the model decides whether each action is allowed, needs approval, or is refused.
 ## 6. The lethal trifecta
 
 An agent is exploitable for data theft when it combines **(1) access to private data**, **(2)
-exposure to untrusted content**, and **(3) a channel to send data out**. Warden has all three by
+exposure to untrusted content**, and **(3) a channel to send data out**. Bastion has all three by
 design: that is what a useful personal agent is. It cannot remove any leg entirely, so it
 **breaks the chain at runtime**: once untrusted content has entered a turn (taint), every
 outbound channel (send email, fetch a URL the model composed, create an invite with external
@@ -84,7 +84,7 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T9 | Secrets leak into logs, audit entries, or model context | Info disclosure | A1, A5 | Keyring-only storage (C8); redaction filter on all log and audit output (C8); tools never return credentials |
 | T10 | Token theft from disk | Info disclosure | A5 | OS keyring (C8); AES-GCM field encryption for sensitive DB fields (C13) |
 | T11 | Over-broad Google access amplifies any compromise | EoP | All | Minimal OAuth scopes; `gmail.send` opt-in (C9) |
-| T12 | Owner cannot tell what the agent did, or evidence is edited | Repudiation | A1, A5 | Hash-chained audit log with `warden audit verify` (C10) |
+| T12 | Owner cannot tell what the agent did, or evidence is edited | Repudiation | A1, A5 | Hash-chained audit log with `bastion audit verify` (C10) |
 | T13 | Scheduled task loops, burns money, or drifts beyond its purpose | DoS / EoP | A1 | Capability grants, step/token/cost budgets, rate limits, kill switch (C11) |
 | T14 | Poisoned dependency | All | A4 | Hash-locked dependencies, minimal dependency tree, pip-audit, Dependabot, CodeQL, SBOM, signed releases (C14) |
 | T15 | Malicious tool-call arguments (wrong types, path tricks, header injection) | Tampering | A1 | Every tool's arguments validated by a strict Pydantic schema before policy evaluation |
@@ -101,14 +101,14 @@ C15 red-team eval suite (verifies C1 to C13 against a corpus of attacks).
 ## 9. Accepted risks and non-goals
 
 - **A6, a malicious LLM provider,** sees everything in the prompt. Mitigation is provider choice
-  (including fully local models through any OpenAI-compatible server). Warden does not encrypt
+  (including fully local models through any OpenAI-compatible server). Bastion does not encrypt
   prompts from the provider.
 - **A5 with code execution as the owner** can read the keyring and memory of the running process.
   Defending against a fully compromised user account is out of scope.
 - **Information disclosed in replies to the owner** is by design: if the owner asks "summarise my
   inbox", the summary contains private data. The goal is that data only flows to the owner.
 - **Approval fatigue.** If the owner approves everything without reading, approvals don't help.
-  Warden mitigates this by keeping approvals rare (read actions never prompt), showing exact
+  Bastion mitigates this by keeping approvals rare (read actions never prompt), showing exact
   diffs, and requiring TOTP only for the highest tier.
 - **Shell and code execution and browser automation** are deliberately excluded from v1.
 

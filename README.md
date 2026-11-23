@@ -1,11 +1,11 @@
-# Warden
+# Bastion
 
 **A secure, always-on personal AI agent. The system, not the model, decides what the agent may do.**
 
-Warden is a personal agent you talk to over Telegram or the CLI. It can read your Gmail and
+Bastion is a personal agent you talk to over Telegram or the CLI. It can read your Gmail and
 Calendar, search the web, and run tasks on a schedule. Unlike most agents, it is designed on the
 assumption that the language model **will** be prompt-injected at some point: a malicious email or
-web page will eventually try to make it leak your data or act against you. Warden's security
+web page will eventually try to make it leak your data or act against you. Bastion's security
 controls live outside the model, so a hijacked model still cannot do damage.
 
 > Status: pre-alpha, under active development. See the [roadmap](#roadmap).

@@ -21,10 +21,10 @@ Only the latest release receives security fixes while the project is pre-1.0.
 
 ## What counts as a vulnerability
 
-Warden assumes the language model can be manipulated, so "I made the model say something odd" is
+Bastion assumes the language model can be manipulated, so "I made the model say something odd" is
 not a vulnerability by itself. These are:
 
-- Any way to make Warden perform a `send` or `destructive` action **without** the owner's approval
+- Any way to make Bastion perform a `send` or `destructive` action **without** the owner's approval
 - Any way to exfiltrate private data (emails, calendar, memory, secrets) to a third party
 - Bypassing the approval binding (approving one action and having a different one executed)
 - Bypassing the Telegram owner allowlist or TOTP step-up

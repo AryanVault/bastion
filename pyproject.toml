@@ -1,5 +1,5 @@
 [project]
-name = "warden"
+name = "bastion"
 version = "0.1.0"
 description = "A secure, always-on personal AI agent. The system, not the model, decides what the agent may do."
 readme = "README.md"
@@ -17,14 +17,14 @@ dependencies = [
 ]
 
 [project.scripts]
-warden = "warden.cli:app"
+bastion = "bastion.cli:app"
 
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/warden"]
+packages = ["src/bastion"]
 
 # ---------------------------------------------------------------- tooling ---
 
@@ -54,7 +54,7 @@ select = [
 python_version = "3.13"
 strict = true
 mypy_path = "src"
-packages = ["warden"]
+packages = ["bastion"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -67,9 +67,9 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["warden"]
+source = ["bastion"]
 branch = true
-omit = ["*/warden/__main__.py"]
+omit = ["*/bastion/__main__.py"]
 
 [tool.coverage.report]
 fail_under = 80
