@@ -21,6 +21,10 @@ from bastion.security.redact import Redactor
 from bastion.security.vault import (
     AUDIT_KEY,
     BRAVE_API_KEY,
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_GRANT,
+    GOOGLE_REFRESH_TOKEN,
     STORAGE_KEY,
     TELEGRAM_OWNER,
     TELEGRAM_TOKEN,
@@ -34,12 +38,20 @@ from bastion.text import reveal_invisible
 from bastion.tools.base import RiskTier
 
 audit_app = typer.Typer(
-    help="Inspect and verify the tamper-evident audit log.", no_args_is_help=True
+    pretty_exceptions_show_locals=False,  # tracebacks must never print secrets
+    help="Inspect and verify the tamper-evident audit log.",
+    no_args_is_help=True,
 )
 secrets_app = typer.Typer(
-    help="Manage secrets in the OS keyring (values are never shown).", no_args_is_help=True
+    pretty_exceptions_show_locals=False,  # tracebacks must never print secrets
+    help="Manage secrets in the OS keyring (values are never shown).",
+    no_args_is_help=True,
 )
-policy_app = typer.Typer(help="Show the action policy.", no_args_is_help=True)
+policy_app = typer.Typer(
+    pretty_exceptions_show_locals=False,  # tracebacks must never print secrets
+    help="Show the action policy.",
+    no_args_is_help=True,
+)
 
 _DETAIL_WIDTH = 90
 
@@ -144,6 +156,10 @@ def _known_secret_names() -> list[str]:
         TELEGRAM_TOKEN,
         TELEGRAM_OWNER,
         TOTP_SECRET,
+        GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET,
+        GOOGLE_REFRESH_TOKEN,
+        GOOGLE_GRANT,
     ]
 
 

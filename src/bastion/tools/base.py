@@ -89,6 +89,8 @@ class Tool[A: ToolArgs](ABC):
     description: ClassVar[str]
     args_model: ClassVar[type[ToolArgs]]
     risk: ClassVar[RiskTier]
+    # Approvals of this tool always need the one-time code, whatever the policy's step-up tiers.
+    step_up: ClassVar[bool] = False
 
     def risk_for(self, args: A) -> RiskTier:
         """Risk of this particular call. Tools may escalate based on arguments."""

@@ -281,7 +281,9 @@ class Agent:
                 tool_call, f"invalid arguments for {tool.name}: {_describe_validation(exc)}"
             )
         tier = tool.risk_for(args)
-        decision = self._policy.decide(tool.name, tier, turn.conversation.taint)
+        decision = self._policy.decide(
+            tool.name, tier, turn.conversation.taint, always_step_up=tool.step_up
+        )
         self._audit.append(
             "policy.decision",
             {

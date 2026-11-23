@@ -163,7 +163,10 @@ class PolicyEngine:
     def config(self) -> PolicyConfig:
         return self._config
 
-    def decide(self, tool: str, tier: RiskTier, taint: TaintState) -> Decision:
+    def decide(
+        self, tool: str, tier: RiskTier, taint: TaintState, *, always_step_up: bool = False
+    ) -> Decision:
+        """``always_step_up``: the tool demands a one-time code whenever the owner is asked."""
         if tool not in self._known_tools:
             return Decision(Verdict.DENY, f"unknown tool '{tool}' (default deny)")
         tainted = taint.tainted
@@ -175,7 +178,7 @@ class PolicyEngine:
         floor = _FLOORS.get((tier, tainted))
         if floor is not None:
             verdict = _at_least(verdict, floor)
-        step_up = verdict is Verdict.ASK and tier in self._config.step_up.tiers
+        step_up = verdict is Verdict.ASK and (always_step_up or tier in self._config.step_up.tiers)
         return Decision(verdict, self._reason(tier, taint, verdict), step_up)
 
     @staticmethod

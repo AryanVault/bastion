@@ -9,9 +9,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx2
+
 from bastion.config import DATABASE_FILE, POLICY_FILE, ConfigError, Settings, load_settings
 from bastion.core.agent import Agent, AgentLimits, Approver
+from bastion.google.api import GoogleApi, google_client
+from bastion.google.calendar import CalendarClient
+from bastion.google.gmail import GmailClient
+from bastion.google.grant import load_client, load_grant
+from bastion.google.oauth import GoogleAuth
 from bastion.llm.factory import build_provider
+from bastion.llm.quarantine import QuarantinedReader
 from bastion.llm.types import LLMProvider
 from bastion.security.approvals import ApprovalService
 from bastion.security.audit import AuditLog
@@ -21,17 +29,28 @@ from bastion.security.redact import Redactor
 from bastion.security.vault import (
     AUDIT_KEY,
     BRAVE_API_KEY,
+    GOOGLE_REFRESH_TOKEN,
     STORAGE_KEY,
     SecretStore,
     Vault,
     VaultAnchor,
+    VaultError,
 )
 from bastion.storage.db import connect
 from bastion.storage.memory_bank import MemoryBank
 from bastion.tools.base import Tool, ToolRegistry
+from bastion.tools.calendar import (
+    CalendarCreateTool,
+    CalendarDeleteTool,
+    CalendarListTool,
+    CalendarUpdateTool,
+)
+from bastion.tools.gmail import GmailDraftTool, GmailReadTool, GmailSearchTool, GmailSendTool
 from bastion.tools.memory import MemoryDeleteTool, MemorySaveTool, MemorySearchTool
 from bastion.tools.web_fetch import WebFetchTool
 from bastion.tools.web_search import BraveSearch, WebSearchTool
+
+GOOGLE_OFF_NOTICE = "Gmail and Calendar are off. Run: bastion google connect"
 
 
 @dataclass
@@ -47,6 +66,8 @@ class Runtime:
     notices: tuple[str, ...]
     # Knows every secret loaded through the vault: channels run outgoing text through it.
     redactor: Redactor
+    # HTTP clients the runtime owns besides the provider's (Google APIs), closed by `aclose`.
+    clients: tuple[httpx2.AsyncClient, ...] = ()
 
     def agent(self, approver: Approver) -> Agent:
         limits = self.settings.limits
@@ -66,7 +87,9 @@ class Runtime:
         )
 
     async def aclose(self) -> None:
-        """Release the provider's network resources (call inside the event loop)."""
+        """Release network resources (call inside the event loop)."""
+        for client in self.clients:
+            await client.aclose()
         await self.provider.aclose()
 
     def close(self) -> None:
@@ -78,9 +101,64 @@ def open_audit_log(conn: sqlite3.Connection, vault: Vault, redactor: Redactor) -
     return AuditLog(conn, vault.key(AUDIT_KEY), redactor, anchor=VaultAnchor(vault))
 
 
-def build_tools(
+@dataclass(frozen=True)
+class GoogleTools:
+    tools: tuple[Tool[Any], ...]
+    notices: tuple[str, ...]
+    client: httpx2.AsyncClient | None = None
+
+
+def build_google_tools(
+    vault: Vault, redactor: Redactor, provider: LLMProvider, audit: AuditLog
+) -> GoogleTools:
+    """Gmail and Calendar tools for exactly the access the owner granted (none if not connected).
+
+    The access token comes from the refresh token in the keyring, which is re-checked before
+    every use: `bastion google disconnect` (or a reconnect) stops a running daemon's access.
+    """
+    try:
+        grant, credentials = load_grant(vault), load_client(vault)
+        refresh_token = vault.get(GOOGLE_REFRESH_TOKEN)
+    except VaultError as exc:
+        return GoogleTools((), (f"Gmail and Calendar are off: {exc}",))
+    if grant is None or credentials is None or refresh_token is None:
+        return GoogleTools((), (GOOGLE_OFF_NOTICE,))
+
+    def still_connected() -> bool:
+        try:
+            return vault.get(GOOGLE_REFRESH_TOKEN) == refresh_token
+        except VaultError:
+            return False  # fail closed: an unreadable keyring means no access
+
+    client = google_client()
+    auth = GoogleAuth(
+        client, credentials, refresh_token, redactor=redactor, still_connected=still_connected
+    )
+    api = GoogleApi(auth, client)
+    tools: list[Tool[Any]] = []
+    if grant.gmail != "off":
+        gmail = GmailClient(api)
+        tools += [GmailSearchTool(gmail), GmailReadTool(gmail, QuarantinedReader(provider, audit))]
+        if grant.gmail in ("draft", "send"):
+            tools.append(GmailDraftTool(gmail))
+        if grant.gmail == "send":
+            tools.append(GmailSendTool(gmail))
+    if grant.calendar != "off":
+        calendar = CalendarClient(api)
+        tools.append(CalendarListTool(calendar))
+        if grant.calendar == "write":
+            tools += [
+                CalendarCreateTool(calendar),
+                CalendarUpdateTool(calendar),
+                CalendarDeleteTool(calendar),
+            ]
+    return GoogleTools(tuple(tools), (), client)
+
+
+def core_tools(
     settings: Settings, vault: Vault, bank: MemoryBank
-) -> tuple[ToolRegistry, tuple[str, ...]]:
+) -> tuple[list[Tool[Any]], tuple[str, ...]]:
+    """The tools every runtime has: web, memory, and web search if a key is stored."""
     tools: list[Tool[Any]] = [
         WebFetchTool(),
         MemorySaveTool(bank),
@@ -96,7 +174,7 @@ def build_tools(
             notices.append(
                 f"Web search is off (no Brave Search key). Run: bastion secrets set {BRAVE_API_KEY}"
             )
-    return ToolRegistry(tools), tuple(notices)
+    return tools, tuple(notices)
 
 
 def open_runtime(home: Path, store: SecretStore, *, provider: LLMProvider | None = None) -> Runtime:
@@ -110,10 +188,28 @@ def open_runtime(home: Path, store: SecretStore, *, provider: LLMProvider | None
     try:
         audit = open_audit_log(conn, vault, redactor)
         bank = MemoryBank(conn, FieldCipher(vault.key(STORAGE_KEY)))
-        tools, notices = build_tools(settings, vault, bank)
-        policy = PolicyEngine(load_policy(policy_path), tools.names)
+        policy_config = load_policy(policy_path)
         llm = provider if provider is not None else build_provider(settings.llm, vault)
+        base, notices = core_tools(settings, vault, bank)
+        # Last: nothing after this can fail, so its HTTP client always reaches the Runtime
+        # (whose `aclose` closes it) instead of leaking.
+        google = build_google_tools(vault, redactor, llm, audit)
     except BaseException:
         conn.close()
         raise
-    return Runtime(home, settings, vault, conn, audit, tools, policy, llm, notices, redactor)
+    tools = ToolRegistry([*base, *google.tools])
+    policy = PolicyEngine(policy_config, tools.names)
+    clients = (google.client,) if google.client is not None else ()
+    return Runtime(
+        home,
+        settings,
+        vault,
+        conn,
+        audit,
+        tools,
+        policy,
+        llm,
+        (*notices, *google.notices),
+        redactor,
+        clients,
+    )

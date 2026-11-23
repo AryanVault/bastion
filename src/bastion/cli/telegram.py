@@ -34,7 +34,9 @@ from bastion.telegram.pairing import (
 from bastion.text import reveal_invisible
 
 telegram_app = typer.Typer(
-    help="Connect Bastion to a Telegram bot and pair your account.", no_args_is_help=True
+    pretty_exceptions_show_locals=False,  # tracebacks must never print secrets
+    help="Connect Bastion to a Telegram bot and pair your account.",
+    no_args_is_help=True,
 )
 
 MAX_ENROLL_ATTEMPTS = 3

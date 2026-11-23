@@ -17,6 +17,7 @@
    security/approvals.py + channel approver: owner approves the exact arguments
               ▼
    tools/* run  ──> security/egress.py (web)  ·  storage/memory_bank.py (memory)
+                ──> google/ (Gmail, Calendar)  ·  llm/quarantine.py (reads email, no tools)
               ▼
    output: untrusted? -> taint conversation, fence content (core/prompts.py)
               ▼
@@ -40,7 +41,7 @@ policy, one audit log and one set of controls.
    exact arguments before the tool runs.
 4. Tools run under a timeout. `ToolError` messages are safe to show the model; any other
    exception is contained and reported generically, with details only in the audit log.
-5. Untrusted output (web pages, search results, untrusted memories) taints the conversation for
+5. Untrusted output (web pages, search results, email, invitations, untrusted memories) taints the conversation for
    good, loses invisible characters (tag characters, zero-width, bidi), and is wrapped in a fence
    whose closing tag carries a random boundary. A tool *failure* after contacting an untrusted
    party is treated the same way, and tool error messages never echo remote data.
@@ -66,7 +67,16 @@ policy, one audit log and one set of controls.
 | `security/crypto.py` | AES-256-GCM field encryption with context binding |
 | `storage/db.py` | SQLite (WAL), migrations, append-only triggers |
 | `storage/memory_bank.py` | Encrypted memories with provenance |
-| `tools/*` | `web_search`, `web_fetch`, `memory_save/search/delete` |
+| `tools/*` | `web_search`, `web_fetch`, `memory_save/search/delete`, `gmail_*`, `calendar_*` |
+| `tools/gmail.py` | Search, read (quarantined digest by default), draft, and opt-in send |
+| `tools/calendar.py` | List, create, change and delete events; identity checks against the live event |
+| `llm/quarantine.py` | The quarantined reader: a tool-less model call with a strict JSON schema |
+| `google/oauth.py` | Desktop sign-in (loopback, PKCE, state), token refresh and revocation |
+| `google/api.py` | Authenticated REST calls: refresh on 401, size cap, safe error messages |
+| `google/grant.py` | Access levels, the scopes they need, and what was granted |
+| `google/gmail.py`, `google/calendar.py` | Thin Gmail and Calendar clients (ETags on changes) |
+| `google/mail.py`, `google/events.py` | Pure helpers: addresses, MIME, bodies; event trust and times |
+| `net.py` | Shared HTTP helpers (request logs silenced) |
 | `security/totp.py` | Authenticator (TOTP) codes for step-up approvals, single use |
 | `security/killswitch.py` | The `/stop` switch: a file only `bastion resume` removes |
 | `security/ratelimit.py` | Token bucket for requests over always-on channels |
@@ -76,7 +86,7 @@ policy, one audit log and one set of controls.
 | `telegram/bot.py` | The daemon: owner check, commands, kill switch, rate limit, one request at a time |
 | `telegram/text.py` | Plain-text chunking and the approval prompt |
 | `text.py` | Invisible and control characters: strip (for the model and replies) or reveal (for approvals) |
-| `cli/*` | `bastion` commands, the terminal approver, `daemon`, `telegram`, `resume` |
+| `cli/*` | `bastion` commands, the terminal approver, `daemon`, `telegram`, `google`, `resume` |
 | `config.py`, `runtime.py` | Configuration and wiring |
 
 ## Security controls in the code
@@ -86,17 +96,21 @@ policy, one audit log and one set of controls.
 | C1 policy engine | `security/policy.py`, `core/agent.py::_handle` | `tests/unit/security/test_policy.py` |
 | C2 taint tracking | `core/conversation.py::TaintState`, `core/agent.py::_accept` | `tests/unit/core/test_agent.py` |
 | C2 taint: forwarded messages | `telegram/bot.py::_start_turn` | `tests/unit/telegram/test_bot.py` |
+| C2 taint: email and invitations | `tools/gmail.py`, `google/events.py::Event.owner_written`, `tools/calendar.py` | `test_gmail.py`, `test_events.py`, `tools/test_calendar.py` |
+| C3 quarantined reader | `llm/quarantine.py`, `tools/gmail.py::GmailReadTool` | `test_quarantine.py`, `test_gmail.py` |
 | C4 argument-bound approvals | `security/approvals.py`, `cli/approver.py`, `telegram/approver.py` | `test_approvals.py`, `test_approver.py` (CLI and Telegram) |
-| C5 TOTP step-up | `security/totp.py`, `telegram/approver.py` | `test_totp.py`, `telegram/test_approver.py`, `test_bot.py` |
+| C4 approvals that name their target | `tools/calendar.py::_check_identity`, `google/calendar.py` (`If-Match`) | `tools/test_calendar.py`, `test_clients.py` |
+| C5 TOTP step-up | `security/totp.py`, `telegram/approver.py`, `security/policy.py` (`always_step_up`), `tools/gmail.py::GmailSendTool.step_up` | `test_totp.py`, `telegram/test_approver.py`, `test_bot.py` |
 | C6 Telegram lockdown | `telegram/pairing.py`, `telegram/bot.py::_on_message`, `telegram/api.py` | `test_pairing.py`, `test_bot.py`, `telegram/test_api.py` |
 | C7 egress guard | `security/egress.py`, `tools/web_fetch.py` | `test_egress.py`, `test_web_fetch.py` |
-| C8 vault and redaction | `security/vault.py`, `security/redact.py`, `llm/factory.py` | `test_vault.py`, `test_redact.py`, `test_factory.py` |
+| C8 vault and redaction | `security/vault.py`, `security/redact.py`, `llm/factory.py`, `google/oauth.py::GoogleAuth`, `google/api.py` | `test_vault.py`, `test_redact.py`, `test_factory.py`, `test_oauth.py`, `google/test_api.py` |
+| C9 least-privilege OAuth | `google/grant.py`, `runtime.py::build_google_tools`, `cli/google.py`, `google/oauth.py::LoopbackReceiver` | `test_grant.py`, `test_runtime.py`, `test_google_commands.py`, `test_oauth.py` |
 | C10 audit log | `security/audit.py`, `storage/db.py`, `security/vault.py::VaultAnchor` (checkpoint), `telegram/bot.py::_checkpoint` (off-machine copy) | `test_audit.py`, `test_commands.py`, `test_telegram_commands.py` |
 | C11 budgets, rate limit, kill switch | `core/agent.py::AgentLimits`, `security/ratelimit.py`, `security/killswitch.py` | `test_agent.py`, `test_killswitch_ratelimit.py`, `test_bot.py` |
-| C12 memory provenance | `tools/memory.py`, `storage/memory_bank.py` | `tests/unit/tools/test_memory.py` |
+| C12 memory provenance | `tools/memory.py`, `storage/memory_bank.py`; calendar origin marker in `tools/calendar.py` | `tests/unit/tools/test_memory.py`, `tools/test_calendar.py` |
 | C13 encryption at rest | `security/crypto.py`, `storage/memory_bank.py` | `test_crypto.py`, `test_memory.py` |
 | C14 supply chain | `uv.lock`, `.github/workflows/` | CI |
-| C16 display safety | `text.py`, `core/agent.py::_accept`, `cli/approver.py`, `cli/chat.py`, `telegram/text.py`, `telegram/api.py` (no markup, no link previews) | `test_text.py`, `test_approver.py`, `test_agent.py`, `telegram/test_text.py`, `telegram/test_api.py` |
+| C16 display safety | `text.py`, `core/agent.py::_accept`, `cli/approver.py`, `cli/chat.py`, `telegram/text.py`, `telegram/api.py` (no markup, no link previews), `google/mail.py` (bare ASCII addresses) | `test_text.py`, `test_approver.py`, `test_agent.py`, `telegram/test_text.py`, `telegram/test_api.py`, `test_mail.py` |
 
 Tests that simulate an attack are marked `@pytest.mark.security` (`uv run pytest -m security`).
 
@@ -108,7 +122,8 @@ Tests that simulate an attack are marked `@pytest.mark.security` (`uv run pytest
 | `~/.bastion/policy.toml` | The owner's policy (cannot weaken the code-enforced floors) |
 | `~/.bastion/bastion.db` | SQLite: `audit_log` (HMAC chain, append-only triggers), `memories` (AES-GCM) |
 | `~/.bastion/STOPPED` | Present while the kill switch is engaged (`/stop`); removed by `bastion resume` |
-| OS keyring, service `bastion` | LLM and search API keys, `audit.hmac_key`, `storage.encryption_key`, `audit.chain_head`, `telegram.bot_token`, `telegram.owner`, `auth.totp_secret` |
+| OS keyring, service `bastion` | LLM and search API keys, `audit.hmac_key`, `storage.encryption_key`, `audit.chain_head`, `telegram.bot_token`, `telegram.owner`, `auth.totp_secret`, `google.client_id`, `google.client_secret`, `google.refresh_token`, `google.grant` (account and access levels) |
+| Google Calendar | Events Bastion wrote from untrusted content carry `extendedProperties.private.bastion_origin = untrusted` |
 
 ## Design decisions
 
@@ -137,3 +152,20 @@ Tests that simulate an attack are marked `@pytest.mark.security` (`uv run pytest
 - **Approvals live in the daemon.** Telegram approvals are resolved in memory by the process
   that asked; restarting abandons them (fail closed). Cross-channel approvals can come with
   scheduled tasks (Phase 4) if they need it.
+- **Thin Google clients.** About ten Gmail and Calendar REST calls over the existing `httpx2`
+  stack, instead of `google-api-python-client` and `google-auth` with their dozens of transitive
+  packages. Phase 3 added no dependencies.
+- **The owner's own OAuth client.** Bastion ships no Google client ID: each owner creates one, so
+  no third party (not even Bastion's authors) can hold access to their account.
+- **One short-lived listener.** Google allows only a loopback redirect for desktop apps with
+  Gmail or Calendar access, so `bastion google connect` listens on 127.0.0.1 for one sign-in.
+  Nothing listens at any other time.
+- **Quarantined reading by default.** `gmail_read` returns the quarantined reader's digest; the
+  exact text is one argument away (`full=true`) when the owner needs it. Either way it is
+  untrusted.
+- **Approvals name their target.** Changing or deleting an event takes its title and start, not
+  just an id, so the approval prompt says what will happen; code verifies them against the
+  live event, and the ETag guards the gap between that check and the write.
+- **Sending mail always needs the code.** Tools can demand step-up regardless of the policy's
+  step-up tiers (`Tool.step_up`); `gmail_send` does, because mail sent as the owner is the
+  costliest thing a hijacked chat account could do.
