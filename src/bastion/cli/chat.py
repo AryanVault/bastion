@@ -37,7 +37,8 @@ Commands:
 Ctrl+C cancels a running request; at the prompt it quits."""
 
 
-def _open(console: Console) -> Runtime:
+def open_session_runtime(console: Console) -> Runtime:
+    """The runtime for an interactive session; exits with a message if it cannot start."""
     try:
         return open_runtime(bastion_home(), deps.secret_store(), provider=deps.provider_override())
     except (ConfigError, PolicyError, VaultError, ProviderConfigError) as exc:
@@ -152,7 +153,7 @@ def _session(runner: asyncio.Runner, runtime: Runtime, console: Console, ask: As
 def chat() -> None:
     """Chat with Bastion in this terminal."""
     console = Console()
-    runtime = _open(console)
+    runtime = open_session_runtime(console)
 
     def ask(prompt: str) -> str:
         return console.input(prompt, markup=False)

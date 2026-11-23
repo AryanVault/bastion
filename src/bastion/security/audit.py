@@ -15,7 +15,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -53,8 +53,15 @@ class AnchorStore(Protocol):
     def set(self, value: str) -> None: ...
 
 
-def _misses_anchor(anchor: tuple[int, str] | None, seq: int, mac: str) -> bool:
-    return anchor is not None and seq == anchor[0] and not hmac.compare_digest(mac, anchor[1])
+MIN_CHECKPOINT_CHARS = 16
+
+
+def _misses(checkpoints: Sequence[tuple[int, str]], seq: int, mac: str) -> bool:
+    """True if a checkpoint for ``seq`` names a different MAC (or MAC prefix)."""
+    return any(
+        seq == at and not hmac.compare_digest(mac[: len(expected)], expected)
+        for at, expected in checkpoints
+    )
 
 
 def _parse_anchor(value: str) -> tuple[int, str] | None:
@@ -62,6 +69,20 @@ def _parse_anchor(value: str) -> tuple[int, str] | None:
     if not seq.isdigit() or len(mac) != len(GENESIS):
         return None
     return int(seq), mac
+
+
+def parse_checkpoint(value: str) -> tuple[int, str]:
+    """Parse an owner-recorded ``"<seq>:<mac prefix>"`` (e.g. from the Telegram digest)."""
+    seq, _, prefix = value.strip().partition(":")
+    prefix = prefix.lower()
+    valid_prefix = MIN_CHECKPOINT_CHARS <= len(prefix) <= len(GENESIS) and all(
+        c in "0123456789abcdef" for c in prefix
+    )
+    if not seq.isdigit() or int(seq) < 1 or not valid_prefix:
+        raise ValueError(
+            f"expected <entry>:<chain>, with at least {MIN_CHECKPOINT_CHARS} hex characters"
+        )
+    return int(seq), prefix
 
 
 class AuditLog:
@@ -115,31 +136,43 @@ class AuditLog:
             raise
         return AuditEntry(seq=seq, ts=ts, event=event, data=clean, prev=prev, mac=mac)
 
-    def verify(self) -> VerifyResult:
+    def verify(self, checkpoints: Sequence[tuple[int, str]] = ()) -> VerifyResult:
+        """Check the chain, the keyring checkpoint, and any owner-recorded ``checkpoints``.
+
+        Each extra checkpoint is ``(seq, mac or MAC prefix)``, e.g. from the daily Telegram
+        digest: a copy kept off this machine, which an attacker here cannot rewrite.
+        """
         raw_anchor = self._anchor.get() if self._anchor is not None else None
         anchor = _parse_anchor(raw_anchor) if raw_anchor is not None else None
         if raw_anchor is not None and anchor is None:
             return VerifyResult(ok=False, entries=0, reason="the audit checkpoint is corrupt")
+        expected = [*([anchor] if anchor else []), *checkpoints]
         expected_seq, prev, verified = 1, GENESIS, 0
         rows = self._conn.execute(
             "SELECT seq, ts, event, data, prev, mac FROM audit_log ORDER BY seq"
         )
         for seq, ts, event, data_json, row_prev, mac in rows:
             problem = self._check_row(expected_seq, prev, seq, ts, event, data_json, row_prev, mac)
-            if problem is None and _misses_anchor(anchor, seq, mac):
-                problem = "entry does not match the last checkpoint"
+            if problem is None and _misses(expected, seq, mac):
+                problem = "entry does not match a checkpoint"
             if problem is not None:
                 return VerifyResult(ok=False, entries=verified, first_bad_seq=seq, reason=problem)
             expected_seq, prev, verified = seq + 1, mac, verified + 1
-        if anchor and anchor[0] >= expected_seq:
+        furthest = max((at for at, _ in expected), default=0)
+        if furthest >= expected_seq:
             return VerifyResult(
                 ok=False,
                 entries=verified,
                 first_bad_seq=expected_seq,
                 reason=f"the log ends at entry {expected_seq - 1} but was checkpointed at "
-                f"entry {anchor[0]}: entries were removed",
+                f"entry {furthest}: entries were removed",
             )
         return VerifyResult(ok=True, entries=verified)
+
+    def head(self) -> AuditEntry | None:
+        """The newest entry, or None for an empty log."""
+        entries = self.tail(1)
+        return entries[0] if entries else None
 
     def _check_row(
         self,

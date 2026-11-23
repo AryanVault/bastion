@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from bastion.security.audit import GENESIS, AuditLog
+from bastion.security.audit import GENESIS, AuditLog, parse_checkpoint
 from bastion.security.redact import Redactor
 from bastion.storage.db import connect
 
@@ -241,3 +241,64 @@ def test_a_corrupt_checkpoint_is_reported(conn: sqlite3.Connection) -> None:
 
     assert not result.ok
     assert "corrupt" in result.reason
+
+
+# ------------------------------------------- checkpoints recorded off-machine
+
+
+def test_head_is_the_newest_entry(conn: sqlite3.Connection) -> None:
+    log = AuditLog(conn, KEY, Redactor())
+
+    assert log.head() is None
+    log.append("a", {})
+    last = log.append("b", {})
+
+    assert log.head() == last
+
+
+def test_a_recorded_checkpoint_prefix_verifies(conn: sqlite3.Connection) -> None:
+    log = AuditLog(conn, KEY, Redactor())
+    entry = log.append("event", {})
+    log.append("later", {})
+
+    assert log.verify([(entry.seq, entry.mac[:16])]).ok
+
+
+@pytest.mark.security
+def test_a_log_rewritten_with_the_key_is_caught_by_an_off_machine_checkpoint(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    # An attacker holding the key (and the keyring anchor) can forge a whole new chain, but
+    # not the checkpoint the owner already received on their phone.
+    original = AuditLog(conn, KEY, Redactor()).append("approval.decision", {"approved": False})
+    with closing(connect(tmp_path / "forged.db")) as forged_conn:
+        forged = AuditLog(forged_conn, KEY, Redactor())
+        forged.append("approval.decision", {"approved": True})
+
+        result = forged.verify([(original.seq, original.mac[:16])])
+
+    assert not result.ok
+    assert "checkpoint" in result.reason
+
+
+@pytest.mark.security
+def test_truncation_below_a_recorded_checkpoint_is_caught(conn: sqlite3.Connection) -> None:
+    log = AuditLog(conn, KEY, Redactor())
+    log.append("event", {})
+
+    result = log.verify([(5, "0" * 16)])
+
+    assert not result.ok
+    assert "removed" in result.reason
+
+
+@pytest.mark.parametrize(
+    "value", ["", "12", "x:" + "a" * 16, "0:" + "a" * 16, "3:" + "a" * 15, "3:" + "g" * 16]
+)
+def test_malformed_checkpoints_are_rejected(value: str) -> None:
+    with pytest.raises(ValueError, match="hex"):
+        parse_checkpoint(value)
+
+
+def test_checkpoints_are_parsed_case_insensitively() -> None:
+    assert parse_checkpoint(" 42:ABCDEF0123456789 ") == (42, "abcdef0123456789")

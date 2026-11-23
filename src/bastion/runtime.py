@@ -45,6 +45,8 @@ class Runtime:
     policy: PolicyEngine
     provider: LLMProvider
     notices: tuple[str, ...]
+    # Knows every secret loaded through the vault: channels run outgoing text through it.
+    redactor: Redactor
 
     def agent(self, approver: Approver) -> Agent:
         limits = self.settings.limits
@@ -114,4 +116,4 @@ def open_runtime(home: Path, store: SecretStore, *, provider: LLMProvider | None
     except BaseException:
         conn.close()
         raise
-    return Runtime(home, settings, vault, conn, audit, tools, policy, llm, notices)
+    return Runtime(home, settings, vault, conn, audit, tools, policy, llm, notices, redactor)

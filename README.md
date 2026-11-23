@@ -2,9 +2,8 @@
 
 **A secure, always-on personal AI agent. The system, not the model, decides what the agent may do.**
 
-Bastion is a personal agent you talk to from the terminal (and soon Telegram). It searches and
-reads the web, remembers things for you, and is growing Gmail, Calendar and scheduled-task
-abilities. Unlike most agents, it is built on the assumption that the language model **will** be
+Bastion is a personal agent you talk to from Telegram or the terminal. It searches and reads the
+web, remembers things for you, and is growing Gmail, Calendar and scheduled-task abilities. Unlike most agents, it is built on the assumption that the language model **will** be
 prompt-injected at some point: a web page or email will eventually try to make it leak your data
 or act against you. Bastion's security controls live *outside* the model, in ordinary code, so a
 hijacked model still cannot do damage.
@@ -44,7 +43,10 @@ decides permissions.
 | Encrypted memory with provenance bound into the ciphertext | Injected "remember this" instructions coming back as trusted | Built |
 | Step, tool-call and token budgets per request | Runaway or hijacked loops | Built |
 | Display safety (escape codes, bidi tricks, disguised links) | Misleading the owner on screen | Built |
-| Telegram owner allowlist, TOTP step-up, no link previews | Strangers, a hijacked Telegram account, preview exfiltration | Phase 2 |
+| Telegram pairing and owner lockdown, no open ports | Strangers commanding the bot | Built |
+| Authenticator-code (TOTP) step-up; a `/stop` kill switch only the computer can release | A hijacked Telegram account | Built |
+| Forwarded messages treated as untrusted; no link previews or markup | Injection via forwards, exfiltration via link previews | Built |
+| Daily audit checkpoint sent off the machine | Rewriting or truncating the audit log | Built |
 | Least-privilege Google OAuth, quarantined email reader | Over-broad account access, attacker text reaching the planner | Phase 3 |
 | Capability grants for scheduled tasks | Autonomous tasks drifting beyond their purpose | Phase 4 |
 | Red-team prompt-injection eval suite | Regressions in any of the above | Phase 5 |
@@ -75,21 +77,40 @@ Use whichever model you like; the security guarantees do not depend on it.
 |---|---|
 | `anthropic` | Claude models (default `claude-opus-5-5`) |
 | `openai` | OpenAI models |
-| `gemini`, `openrouter`, `groq`, `mistral` | Through their OpenAI-compatible APIs |
+| `openrouter` | Hundreds of models; IDs look like `anthropic/claude-sonnet-5.5` (the default) |
+| `gemini`, `groq`, `mistral` | Through their OpenAI-compatible APIs |
 | `ollama` | Fully local; no API key, nothing leaves your machine |
 | `custom` | Any OpenAI-compatible endpoint (HTTPS required) |
 
 Web search uses the [Brave Search API](https://brave.com/search/api/) if you add a key
 (`bastion secrets set search.brave.api_key`).
 
+### Telegram (always on)
+
+1. In Telegram, talk to [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the token.
+2. `uv run bastion telegram setup`: paste the token (hidden; stored in the OS keyring).
+3. `uv run bastion telegram pair`: send the bot the one-time code it shows, then confirm in the
+   terminal that the request came from you. From then on the bot ignores everyone else.
+4. `uv run bastion telegram totp`: add Bastion to an authenticator app. High-risk actions (such
+   as deleting) then need its 6-digit code as well as a tap on Approve.
+5. `uv run bastion daemon`: Bastion is online. It only makes outbound requests to Telegram; no
+   port is opened.
+
+In the chat: `/new` starts fresh, `/status` shows the safety state, `/cancel` abandons a request,
+and `/stop` is the emergency stop: Bastion refuses all work until you run `bastion resume` on
+the computer. A hijacked Telegram account can stop Bastion, but never restart it.
+
 ### Commands
 
 | Command | What it does |
 |---|---|
 | `bastion init` | Set up the provider, keys, config and default policy |
-| `bastion chat` | Talk to Bastion (`/status`, `/new`, `/exit`) |
+| `bastion chat` | Talk to Bastion in the terminal (`/status`, `/new`, `/exit`) |
+| `bastion daemon` | Run Bastion on Telegram, always on |
+| `bastion telegram setup \| pair \| unpair \| totp` | Connect the bot, pair your account, set up step-up codes |
+| `bastion resume` | Release the `/stop` kill switch |
 | `bastion policy show` | Show what is allowed, asked about or denied |
-| `bastion audit verify` | Check the audit log for tampering |
+| `bastion audit verify` | Check the audit log for tampering (`--checkpoint` checks it against a checkpoint the bot sent you) |
 | `bastion audit tail` | Show recent audit entries |
 | `bastion secrets status` | Show which secrets are set (never their values) |
 | `bastion secrets set <name>` | Store a secret from a hidden prompt |
@@ -98,7 +119,7 @@ Web search uses the [Brave Search API](https://brave.com/search/api/) if you add
 
 - [x] Phase 0: foundation, CI security pipeline, threat model
 - [x] Phase 1: secure core, multi-provider LLM layer, CLI, web search and fetch, memory
-- [ ] Phase 2: Telegram channel with approvals and step-up auth
+- [x] Phase 2: Telegram channel with approvals and step-up auth
 - [ ] Phase 3: Gmail and Google Calendar
 - [ ] Phase 4: autonomous scheduled tasks
 - [ ] Phase 5: red-team eval suite, hardened Docker image, signed release

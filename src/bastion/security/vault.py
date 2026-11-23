@@ -25,6 +25,11 @@ AUDIT_KEY = "audit.hmac_key"
 STORAGE_KEY = "storage.encryption_key"
 BRAVE_API_KEY = "search.brave.api_key"
 AUDIT_HEAD = "audit.chain_head"
+TELEGRAM_TOKEN = "telegram.bot_token"  # noqa: S105  # nosec B105: an entry name, not a value
+# Kept in the keyring rather than the database: whoever is the owner can approve actions, so
+# rewriting it must need more than write access to a file.
+TELEGRAM_OWNER = "telegram.owner"
+TOTP_SECRET = "auth.totp_secret"  # noqa: S105  # nosec B105: an entry name, not a value
 
 _NAME = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*(?:\.[a-z0-9]+(?:_[a-z0-9]+)*)+$")
 _INSECURE_BACKENDS = ("keyring.backends.fail", "keyring.backends.null", "keyrings.alt")
