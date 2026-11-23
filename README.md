@@ -2,37 +2,102 @@
 
 **A secure, always-on personal AI agent. The system, not the model, decides what the agent may do.**
 
-Bastion is a personal agent you talk to over Telegram or the CLI. It can read your Gmail and
-Calendar, search the web, and run tasks on a schedule. Unlike most agents, it is designed on the
-assumption that the language model **will** be prompt-injected at some point: a malicious email or
-web page will eventually try to make it leak your data or act against you. Bastion's security
-controls live outside the model, so a hijacked model still cannot do damage.
+Bastion is a personal agent you talk to from the terminal (and soon Telegram). It searches and
+reads the web, remembers things for you, and is growing Gmail, Calendar and scheduled-task
+abilities. Unlike most agents, it is built on the assumption that the language model **will** be
+prompt-injected at some point: a web page or email will eventually try to make it leak your data
+or act against you. Bastion's security controls live *outside* the model, in ordinary code, so a
+hijacked model still cannot do damage.
 
 > Status: pre-alpha, under active development. See the [roadmap](#roadmap).
 
-## Security model at a glance
+## How it works
 
-| Control | Defends against |
+The model can only *propose* tool calls. Every proposal goes through deterministic checks:
+
+```
+model proposes a tool call
+  -> unknown tool?                         deny
+  -> arguments fail the strict schema?     reject
+  -> policy engine (risk tier + taint)     allow | ask the owner | deny
+  -> owner approval, bound to the exact arguments (single use, expiring)
+  -> tool runs with a timeout; failures are contained
+  -> untrusted output taints the conversation and is fenced before the model sees it
+  -> every step is written to an HMAC-chained audit log
+```
+
+Once a web page, search result or email enters a conversation, the conversation is *tainted*:
+anything that sends data out or affects other people now needs your explicit approval, and
+destructive actions are refused outright. No prompt can change that, because the model never
+decides permissions.
+
+## Security controls
+
+| Control | Defends against | Status |
+|---|---|---|
+| Default-deny policy engine with risk-tiered tools and code-enforced floors | The model deciding its own permissions | Built |
+| Taint tracking of untrusted content | Prompt injection escalating into actions | Built |
+| Argument-bound, single-use, expiring approvals | Approve one thing, execute another | Built |
+| URL provenance + SSRF guard checked at connect time (DNS-rebinding safe) | Exfiltration via crafted URLs, internal network access | Built |
+| Secrets only in the OS keyring, plus redaction | Credential theft from disk, logs or model context | Built |
+| HMAC-chained, append-only audit log | Silent tampering with the record of what happened | Built |
+| Encrypted memory with provenance bound into the ciphertext | Injected "remember this" instructions coming back as trusted | Built |
+| Step, tool-call and token budgets per request | Runaway or hijacked loops | Built |
+| Display safety (escape codes, bidi tricks, disguised links) | Misleading the owner on screen | Built |
+| Telegram owner allowlist, TOTP step-up, no link previews | Strangers, a hijacked Telegram account, preview exfiltration | Phase 2 |
+| Least-privilege Google OAuth, quarantined email reader | Over-broad account access, attacker text reaching the planner | Phase 3 |
+| Capability grants for scheduled tasks | Autonomous tasks drifting beyond their purpose | Phase 4 |
+| Red-team prompt-injection eval suite | Regressions in any of the above | Phase 5 |
+
+Read the [threat model](docs/THREAT_MODEL.md) for the attackers, threats and accepted risks, and
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) for where each control lives in the code.
+
+## Quick start
+
+Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
+
+```sh
+git clone https://github.com/AryanVault/bastion.git && cd bastion
+uv sync
+uv run bastion init      # choose a model provider; keys go to the OS keyring
+uv run bastion chat
+```
+
+Configuration lives in `~/.bastion` (override with `BASTION_HOME`). API keys are never written
+to disk by Bastion: they are stored in Windows Credential Manager, the macOS Keychain or the
+Linux Secret Service, and are only ever entered at hidden prompts.
+
+### Model providers
+
+Use whichever model you like; the security guarantees do not depend on it.
+
+| `provider` | Notes |
 |---|---|
-| Default-deny policy engine with risk-tiered tools | Model deciding its own permissions |
-| Taint tracking of untrusted content (email, web) | Prompt injection escalating to actions |
-| Quarantined reader (dual-LLM pattern) | Attacker text reaching the privileged model |
-| Argument-bound, single-use, expiring approvals | Approve-one-thing, execute-another (TOCTOU) |
-| TOTP step-up for high-risk actions | Hijacked Telegram account |
-| Telegram owner allowlist, long polling only | Strangers commanding the bot, exposed webhooks |
-| URL-provenance egress guard and SSRF protection | Data exfiltration through URLs, internal network access |
-| OS keyring secret storage and log redaction | Credential theft from disk, logs, or model context |
-| Least-privilege OAuth scopes | Over-broad access to your Google account |
-| Hash-chained, tamper-evident audit log | Silent tampering with the record of what happened |
-| Capability grants and budgets for scheduled tasks | Runaway autonomy |
-| Red-team prompt-injection eval suite | Regressions: every control is tested against attacks |
+| `anthropic` | Claude models (default `claude-opus-5-5`) |
+| `openai` | OpenAI models |
+| `gemini`, `openrouter`, `groq`, `mistral` | Through their OpenAI-compatible APIs |
+| `ollama` | Fully local; no API key, nothing leaves your machine |
+| `custom` | Any OpenAI-compatible endpoint (HTTPS required) |
 
-The full analysis is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Web search uses the [Brave Search API](https://brave.com/search/api/) if you add a key
+(`bastion secrets set search.brave.api_key`).
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `bastion init` | Set up the provider, keys, config and default policy |
+| `bastion chat` | Talk to Bastion (`/status`, `/new`, `/exit`) |
+| `bastion policy show` | Show what is allowed, asked about or denied |
+| `bastion audit verify` | Check the audit log for tampering |
+| `bastion audit tail` | Show recent audit entries |
+| `bastion secrets status` | Show which secrets are set (never their values) |
+| `bastion secrets set <name>` | Store a secret from a hidden prompt |
 
 ## Roadmap
 
 - [x] Phase 0: foundation, CI security pipeline, threat model
-- [ ] Phase 1: secure core, multi-provider LLM layer, CLI, web search
+- [x] Phase 1: secure core, multi-provider LLM layer, CLI, web search and fetch, memory
 - [ ] Phase 2: Telegram channel with approvals and step-up auth
 - [ ] Phase 3: Gmail and Google Calendar
 - [ ] Phase 4: autonomous scheduled tasks
@@ -40,15 +105,15 @@ The full analysis is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Development
 
-Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
-
 ```sh
 uv sync
-uv run pytest --cov
+uv run pytest --cov                  # tests, 80% coverage gate
+uv run pytest -m security            # just the attack-scenario tests
 uv run ruff check . && uv run ruff format --check .
-uv run mypy
+uv run mypy                          # strict
 uv run bandit -c pyproject.toml -r src
-uv run pip-audit
+uv export --frozen --no-emit-project --format requirements.txt -o requirements-audit.txt
+uv run pip-audit --strict --disable-pip --require-hashes -r requirements-audit.txt
 ```
 
 ## Reporting a vulnerability

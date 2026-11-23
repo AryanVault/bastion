@@ -5,7 +5,9 @@ description = "A secure, always-on personal AI agent. The system, not the model,
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.13"
+# 3.13.6+: earlier 3.13 releases have a quadratic-time html.parser on malformed input
+# (CVE-2025-6069 and follow-ups), a CPU denial-of-service for web_fetch.
+requires-python = ">=3.13.6"
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Programming Language :: Python :: 3.13",
@@ -13,6 +15,14 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "anthropic>=2.12.0",
+    "anyio>=4.16.0",
+    "cryptography>=50.0.2",
+    "httpcore2>=2.16.2",
+    "httpx2>=2.16.2",
+    "keyring>=25.7.0",
+    "openai>=3.57.0",
+    "rich>=15.0.0",
     "typer>=0.15",
 ]
 
@@ -45,10 +55,14 @@ select = [
     "PTH",           # use pathlib
     "T20",           # no print()
     "ASYNC",         # async pitfalls
+    "PLE2502",       # bidirectional control characters in source ("Trojan Source")
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106"]  # asserts and fake secrets are fine in tests
+# Signatures are fixed by httpcore2's AsyncNetworkBackend interface.
+"src/bastion/security/egress.py" = ["ASYNC109"]
+# Asserts, fake secrets, address literals and interface-mandated signatures are fine in tests.
+"tests/**" = ["S101", "S104", "S105", "S106", "ASYNC109"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -58,7 +72,8 @@ packages = ["bastion"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --strict-config"
+pythonpath = ["tests"]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [

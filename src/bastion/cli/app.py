@@ -1,10 +1,11 @@
-"""Command-line entry point for Bastion."""
+"""The ``bastion`` command."""
 
 from typing import Annotated
 
 import typer
 
 from bastion import __version__
+from bastion.cli import admin, chat, setup
 
 app = typer.Typer(
     name="bastion",
@@ -33,3 +34,10 @@ def main(
     ] = False,
 ) -> None:
     """Bastion: the system, not the model, decides what the agent may do."""
+
+
+app.command("init")(setup.init)
+app.command("chat")(chat.chat)
+app.add_typer(admin.audit_app, name="audit")
+app.add_typer(admin.secrets_app, name="secrets")
+app.add_typer(admin.policy_app, name="policy")
