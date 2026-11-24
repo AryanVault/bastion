@@ -50,6 +50,9 @@ jobs:
         run: uv sync --locked
       - name: Bandit (static security analysis)
         run: uv run bandit -c pyproject.toml -r src
+      # Every attack in the corpus, with a model that obeys the attacker: fails if any succeeds.
+      - name: Red-team suite
+        run: uv run bastion redteam
       # Audit exactly what uv.lock pins (hash-checked, nothing installed), not the environment.
       - name: pip-audit (known-vulnerable dependencies in the lockfile)
         run: |

@@ -206,6 +206,8 @@ def test_policy_show_lists_tiers_and_floors(env: Env) -> None:
     assert result.exit_code == 0
     assert "destructive" in output
     assert "Floors enforced in code" in output
+    send_row = next(line for line in result.output.splitlines() if " send " in line)
+    assert "yes" in send_row  # the step-up floor is shown
 
 
 def test_policy_show_needs_setup(env: Env) -> None:

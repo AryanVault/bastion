@@ -215,8 +215,10 @@ async def test_each_run_starts_fresh_with_only_its_granted_tools(rig: Rig) -> No
 
 @pytest.mark.security
 async def test_a_task_cannot_send_without_the_owners_approval(rig: Rig) -> None:
-    """Even a policy that lets the owner's own requests send freely does not cover tasks."""
-    rig.policy = parse_policy(DEFAULT_POLICY_TOML.replace('send = "ask"', 'send = "allow"', 1))
+    """Even a per-tool override that tries to let sends through does not cover tasks."""
+    rig.policy = parse_policy(
+        DEFAULT_POLICY_TOML + "[tools.send_email]" + chr(10) + 'clean = "allow"'
+    )
     sender = SendEmailTool()
     rig.tools = [EchoTool(), sender]
     rig.approver = StubApprover(False)

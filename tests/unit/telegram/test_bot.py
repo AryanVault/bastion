@@ -350,6 +350,8 @@ async def test_a_send_runs_only_after_the_owner_approves(
     assert sender.sent == []
     assert "bob@example.com" in rig.api.last_keyboard().text
     await rig.tap("Approve")
+    assert sender.sent == []  # sending in the owner's name also needs the code
+    await rig.say(CODE)
     await finish(rig)
 
     assert len(sender.sent) == 1
@@ -978,6 +980,7 @@ async def test_an_approved_send_from_a_task_runs(home: Path, conn: sqlite3.Conne
     await rig.bot.check_schedule()
     await rig.prompted()
     await rig.tap("Approve")
+    await rig.say(CODE)
     await finish(rig)
 
     assert len(sender.sent) == 1

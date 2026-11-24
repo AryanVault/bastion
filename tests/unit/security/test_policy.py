@@ -91,6 +91,23 @@ def test_config_cannot_allow_sends_in_a_tainted_context() -> None:
         parse_policy(_policy(tainted_send="allow"))
 
 
+@pytest.mark.security
+def test_config_cannot_allow_sends_even_in_a_clean_context() -> None:
+    # A hijacked chat account is a clean context: sending must still ask (and need the code).
+    with pytest.raises(PolicyError, match="sending in the owner"):
+        parse_policy(_policy().replace('send = "ask"', 'send = "allow"', 1))
+
+
+@pytest.mark.security
+def test_tool_override_cannot_allow_sends_in_a_clean_context() -> None:
+    config = parse_policy(_policy('[tools.gmail_send]\nclean = "allow"'))
+    engine = PolicyEngine(config, known_tools=TOOLS)
+
+    decision = engine.decide("gmail_send", RiskTier.SEND, CLEAN)
+
+    assert decision.verdict is Verdict.ASK and decision.step_up
+
+
 def test_config_can_never_allow_destructive_actions() -> None:
     with pytest.raises(PolicyError, match="destructive"):
         parse_policy(_policy(clean_destructive="allow"))
@@ -153,13 +170,26 @@ def test_a_tool_can_demand_step_up_whatever_its_tier() -> None:
     from bastion.security.policy import PolicyEngine, Verdict, default_policy
     from bastion.tools.base import RiskTier
 
-    engine = PolicyEngine(default_policy(), frozenset({"gmail_send"}))
+    engine = PolicyEngine(default_policy(), frozenset({"gmail_draft"}))
+    tainted = TaintState().with_source("web_fetch:x.example")
 
-    demanded = engine.decide("gmail_send", RiskTier.SEND, TaintState(), always_step_up=True)
-    ordinary = engine.decide("gmail_send", RiskTier.SEND, TaintState())
+    demanded = engine.decide("gmail_draft", RiskTier.WRITE, tainted, always_step_up=True)
+    ordinary = engine.decide("gmail_draft", RiskTier.WRITE, tainted)
 
     assert demanded.verdict is Verdict.ASK and demanded.step_up
     assert ordinary.verdict is Verdict.ASK and not ordinary.step_up
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("tier", [RiskTier.SEND, RiskTier.DESTRUCTIVE])
+def test_a_policy_file_cannot_drop_step_up_for_sending_or_destroying(tier: RiskTier) -> None:
+    # A hijacked chat account must never act in the owner's name or destroy anything without
+    # the authenticator code, whatever the policy file says.
+    engine = PolicyEngine(parse_policy(_policy().replace('["destructive"]', "[]")), TOOLS)
+
+    decision = engine.decide("gmail_send", tier, TaintState())
+
+    assert decision.verdict is Verdict.ASK and decision.step_up
 
 
 @pytest.mark.security
@@ -213,7 +243,7 @@ def test_task_mode_never_sends_unasked_or_destroys_after_untrusted_content(
     from bastion.tools.base import RiskTier
 
     permissive = parse_policy(
-        "[clean]\nread='allow'\nwrite='allow'\nsend='allow'\ndestructive='ask'\n"
+        "[clean]\nread='allow'\nwrite='allow'\nsend='ask'\ndestructive='ask'\n"
         "[tainted]\nread='allow'\nwrite='allow'\nsend='ask'\ndestructive='ask'\n"
     )
     engine = PolicyEngine(permissive, frozenset({"tool", "other"})).for_task(
