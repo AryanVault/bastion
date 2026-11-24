@@ -41,6 +41,40 @@
     links.forEach((_, id) => { const s = document.getElementById(id); if (s) spy.observe(s); });
   }
 
+  /* ------------------------------------------------------------ tone swap */
+  const toneBtn = $("#tone");
+  if (toneBtn) {
+    const root = document.documentElement;
+    const themeColor = $('meta[name="theme-color"]');
+    const sync = () => {
+      const light = root.dataset.tone === "light";
+      toneBtn.setAttribute("aria-pressed", String(light));
+      if (themeColor) themeColor.content = light ? "#eceffd" : "#2433c9";
+    };
+    const setTone = (tone) => {
+      root.dataset.tone = tone;
+      sync();
+      try { window.localStorage.setItem("bastion-tone", tone); } catch { /* storage blocked */ }
+    };
+    sync();
+    toneBtn.hidden = false;
+    toneBtn.addEventListener("click", () => {
+      const next = root.dataset.tone === "light" ? "dark" : "light";
+      if (!motion || !document.startViewTransition) { setTone(next); return; }
+      // The new colours spread out in a circle from the button.
+      const r = toneBtn.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+      document.startViewTransition(() => setTone(next)).ready.then(() => {
+        root.animate(
+          { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+          { duration: 700, easing: "cubic-bezier(.2, .7, .2, 1)", pseudoElement: "::view-transition-new(root)" },
+        );
+      }).catch(() => { /* the swap itself already happened */ });
+    });
+  }
+
   /* ------------------------------------------------------------ scroll reveals */
   if (motion) {
     const groups = [".sec-head", ".asks", ".compare-wrap", ".fit", ".steps", ".hidden-demo",

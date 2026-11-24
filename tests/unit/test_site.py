@@ -117,6 +117,18 @@ def test_the_stylesheet_loads_only_its_own_fonts() -> None:
     assert "@import" not in css
 
 
+def test_every_band_uses_a_tone_the_colour_swap_defines(html: str) -> None:
+    css = (SITE / "styles.css").read_text(encoding="utf-8")
+    bands = re.findall(r'<(?:section|header|footer) class="(?:band|nav|foot) ([^"]+)"', html)
+    tones = {c for classes in bands for c in classes.split() if c.startswith("tone-")}
+
+    assert len(bands) >= 10
+    assert all(any(c.startswith("tone-") for c in classes.split()) for classes in bands)
+    assert tones == {"tone-lead", "tone-alt", "tone-accent"}
+    assert '.tone-lead, :root[data-tone="light"] .tone-alt {' in css
+    assert '.tone-alt, :root[data-tone="light"] .tone-lead {' in css
+
+
 def test_nothing_inline_needs_a_weaker_content_security_policy(page: _Page) -> None:
     assert page.inline_scripts == 0
     assert page.inline_styles == 0

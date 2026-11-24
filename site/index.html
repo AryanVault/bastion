@@ -13,13 +13,14 @@
 <meta name="twitter:card" content="summary">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<script src="tone.js"></script>
 <link rel="stylesheet" href="styles.css">
 <script src="main.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 
-<header class="nav">
+<header class="nav tone-lead">
   <div class="nav-in">
     <a class="brand" href="#top" aria-label="Bastion, back to top">
       <svg class="seal" viewBox="0 0 32 32" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="3"/><path d="M9 8h8.5a4.5 4.5 0 0 1 0 9H9zM9 17h9.5a4.5 4.5 0 0 1 0 9H9z"/></svg>
@@ -32,6 +33,7 @@
       <a href="#how">How it works</a>
       <a href="https://github.com/AryanVault/bastion">GitHub</a>
     </nav>
+    <button class="tone-btn" id="tone" type="button" aria-label="Swap the page colours" aria-pressed="false" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 2a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
     <a class="btn btn-accent btn-sm" href="#start">Get Bastion</a>
   </div>
 </header>
@@ -39,7 +41,7 @@
 <main id="main">
 
 <!-- ============================================================ hero (blue) -->
-<section class="band tone-blue hero" id="top">
+<section class="band tone-lead hero" id="top">
   <div class="wrap hero-grid">
     <div class="hero-copy">
       <p class="eyebrow load" data-step="0">Open source · Runs on your computer · Free</p>
@@ -86,7 +88,7 @@
 </section>
 
 <!-- ============================================================ does (pale) -->
-<section class="band tone-pale" id="does">
+<section class="band tone-alt" id="does">
   <div class="wrap">
     <header class="sec-head">
       <p class="eyebrow">What it does</p>
@@ -105,7 +107,7 @@
 </section>
 
 <!-- ============================================================ why (blue) -->
-<section class="band tone-blue" id="why">
+<section class="band tone-lead" id="why">
   <div class="wrap">
     <header class="sec-head">
       <p class="eyebrow">Why Bastion</p>
@@ -153,7 +155,7 @@
 </section>
 
 <!-- ============================================================ attack (pale) -->
-<section class="band tone-pale" id="attack">
+<section class="band tone-alt" id="attack">
   <div class="wrap">
     <header class="sec-head">
       <p class="eyebrow">An attack, step by step</p>
@@ -198,7 +200,7 @@
       </li>
     </ol>
 
-    <div class="hidden-demo">
+    <div class="hidden-demo tone-lead">
       <div class="hd-copy">
         <h3>Some attacks are invisible</h3>
         <p>This message carries a second sentence written in Unicode “tag” characters. You can’t see it. Many AI models can read it. Bastion strips these characters before untrusted text reaches a model, and shows them in every approval.</p>
@@ -214,7 +216,7 @@
 </section>
 
 <!-- ============================================================ red team (blue) -->
-<section class="band tone-blue" id="redteam">
+<section class="band tone-lead" id="redteam">
   <div class="wrap">
     <header class="sec-head sec-head-wide">
       <div>
@@ -274,7 +276,7 @@
 </section>
 
 <!-- ============================================================ how (pale) -->
-<section class="band tone-pale" id="how">
+<section class="band tone-alt" id="how">
   <div class="wrap">
     <header class="sec-head">
       <p class="eyebrow">How it works</p>
@@ -323,7 +325,7 @@
 </section>
 
 <!-- ============================================================ start (blue) -->
-<section class="band tone-blue" id="start">
+<section class="band tone-lead" id="start">
   <div class="wrap start">
     <header class="sec-head">
       <p class="eyebrow">Get started</p>
@@ -360,7 +362,7 @@
 
 </main>
 
-<footer class="foot tone-blue">
+<footer class="foot tone-lead">
   <div class="wrap foot-in">
     <p class="brand brand-foot"><svg class="seal" viewBox="0 0 32 32" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="3"/><path d="M9 8h8.5a4.5 4.5 0 0 1 0 9H9zM9 17h9.5a4.5 4.5 0 0 1 0 9H9z"/></svg><span>Bastion</span></p>
     <p>Open source under Apache-2.0. Made by <a href="https://github.com/AryanVault">AryanVault</a>.</p>
