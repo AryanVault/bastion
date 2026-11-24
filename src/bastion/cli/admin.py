@@ -218,7 +218,7 @@ def policy_show() -> None:
         raise _fail(console, str(exc)) from exc
     table = Table("risk tier", "clean context", "tainted context", "step-up")
     for tier in RiskTier:
-        step_up = "yes" if tier in config.step_up.tiers else ""
+        step_up = "yes" if tier in config.step_up_tiers else ""
         table.add_row(
             tier.value,
             config.clean.for_tier(tier).value,
@@ -229,6 +229,7 @@ def policy_show() -> None:
     for tool, rule in sorted(config.tools.items()):
         console.print(f"override {escape(tool)}: clean={rule.clean}, tainted={rule.tainted}")
     console.print(
-        "Floors enforced in code: destructive actions always need approval; send actions "
-        "always need approval in a tainted context. Unknown tools are always denied."
+        "Floors enforced in code: send and destructive actions always need approval, and "
+        "your authenticator code; destructive actions are refused in a tainted context. "
+        "Unknown tools are always denied."
     )

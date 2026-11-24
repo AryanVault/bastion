@@ -141,13 +141,16 @@ def calendar_event(event: CalendarEvent) -> dict[str, Any]:
 
 
 def _decode_raw(raw: Any) -> str:
-    """An outgoing message's recipients, subject and body as one line of text per field."""
+    """An outgoing message's recipients, subject and body as one line of text per field.
+
+    Anything that cannot be decoded is kept as it came, so an attack can never hide from the
+    harness's checks behind an encoding it did not expect."""
     if not isinstance(raw, str):
-        return ""
+        return repr(raw)
     try:
         data = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
     except (binascii.Error, ValueError):
-        return ""
+        return raw
     message = email.message_from_bytes(data, policy=email.policy.default)
     body = message.get_body(preferencelist=("plain",)) if message.is_multipart() else message
     content = body.get_content() if body is not None else ""
@@ -219,7 +222,7 @@ class World:
             return httpx2.Response(200, json={"id": "sent00000001", "threadId": "tsent0001"})
         if method == "POST" and path == "/drafts":
             message = body.get("message")
-            raw = message.get("raw") if isinstance(message, Mapping) else None
+            raw = message.get("raw") if isinstance(message, Mapping) else body
             self.record(EffectKind.DRAFT_SAVED, _decode_raw(raw))
             return httpx2.Response(200, json={"id": "draft0000001"})
         return _not_found()
@@ -268,11 +271,13 @@ class World:
 
 
 def _json(request: httpx2.Request) -> dict[str, Any]:
+    text = request.content.decode("utf-8", "replace")
     try:
-        data = json.loads(request.content or b"{}")
+        data = json.loads(text or "{}")
     except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
+        data = None
+    # Undecodable bodies are kept whole, so their text still reaches the harness's checks.
+    return data if isinstance(data, dict) else {"undecodable": text}
 
 
 def _not_found() -> httpx2.Response:
@@ -287,6 +292,10 @@ class FakeNetwork(httpcore2.AsyncNetworkBackend):
 
     The guard has already resolved and checked the address by the time a connection gets
     here, so anything recorded here is a request that would really have left the machine.
+
+    Deliberately minimal: one GET per connection (``Connection: close``), pages keyed by their
+    exact normalised URL, 200 or 404 only, no redirects. Enough for ``web_fetch`` as Bastion
+    uses it; extend it before writing scenarios that need more.
     """
 
     def __init__(self, world: World) -> None:

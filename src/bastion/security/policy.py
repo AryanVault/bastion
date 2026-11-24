@@ -6,7 +6,7 @@ owner's approval, or is refused. These floors are enforced in code and cannot be
 any policy file or per-tool override:
 
 * destructive actions always need approval (or are denied);
-* send actions need approval whenever the conversation contains untrusted content;
+* send actions always need approval;
 * approving a send or destructive action always needs the one-time code (step-up), so a
   hijacked chat account alone can neither act in the owner's name nor destroy anything.
 
@@ -43,6 +43,7 @@ _STRICTNESS = {Verdict.ALLOW: 0, Verdict.ASK: 1, Verdict.DENY: 2}
 _FLOORS: dict[tuple[RiskTier, bool], Verdict] = {
     (RiskTier.DESTRUCTIVE, False): Verdict.ASK,
     (RiskTier.DESTRUCTIVE, True): Verdict.ASK,
+    (RiskTier.SEND, False): Verdict.ASK,
     (RiskTier.SEND, True): Verdict.ASK,
 }
 
@@ -100,12 +101,19 @@ class PolicyConfig(_Strict):
     step_up: StepUpRules = StepUpRules()
     tools: dict[str, ToolRule] = {}
 
+    @property
+    def step_up_tiers(self) -> frozenset[RiskTier]:
+        """Tiers whose approvals need the one-time code: the file's, plus the floor."""
+        return _STEP_UP_FLOOR | self.step_up.tiers
+
     @model_validator(mode="after")
     def _reject_weakened_floors(self) -> Self:
-        if self.tainted.send is Verdict.ALLOW:
-            raise ValueError(
-                "tainted.send cannot be 'allow': untrusted content could trigger outbound actions"
-            )
+        for label, rules in (("clean", self.clean), ("tainted", self.tainted)):
+            if rules.send is Verdict.ALLOW:
+                raise ValueError(
+                    f"{label}.send cannot be 'allow': sending in the owner's name always needs "
+                    "approval"
+                )
         for label, rules in (("clean", self.clean), ("tainted", self.tainted)):
             if rules.destructive is Verdict.ALLOW:
                 raise ValueError(f"{label}.destructive cannot be 'allow'")
@@ -125,7 +133,7 @@ DEFAULT_POLICY_TOML = """\
 #
 # Floors enforced in code, which this file cannot weaken:
 #   - destructive actions always need approval (or are denied)
-#   - send actions always need approval once the conversation contains untrusted content
+#   - send actions always need approval
 #   - approving a send or destructive action always needs your authenticator code
 
 # The conversation contains only your own messages and trusted data.
@@ -229,9 +237,7 @@ class PolicyEngine:
         task_floor = _TASK_FLOORS.get((tier, tainted)) if self._task is not None else None
         if task_floor is not None:
             verdict = _at_least(verdict, task_floor)
-        step_up = verdict is Verdict.ASK and (
-            always_step_up or tier in _STEP_UP_FLOOR or tier in self._config.step_up.tiers
-        )
+        step_up = verdict is Verdict.ASK and (always_step_up or tier in self._config.step_up_tiers)
         return Decision(verdict, self._label(self._reason(tier, taint, verdict)), step_up)
 
     def _label(self, reason: str) -> str:

@@ -27,7 +27,7 @@ def test_it_runs_without_any_setup_and_reports_no_successful_attack(tmp_path: Pa
     result = runner.invoke(app, [*PHISH, "--only", "web-ssrf-rebinding", "--json", str(out)])
 
     assert result.exit_code == 0, result.output
-    assert "2 attacks, 0 succeeded. Held: 1 refused, 1 asked owner." in result.output
+    assert "2 attacks, 0 succeeded. Held: 1 refused, 1 asked you." in result.output
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["compromised"] == 0
     assert [r["outcome"] for r in data["results"]] == ["asked_owner", "refused"]
@@ -68,7 +68,7 @@ def test_live_runs_use_the_configured_model_after_confirmation(
     monkeypatch.setattr(deps, "provider_override", lambda: model)
 
     declined = runner.invoke(app, [*PHISH, "--live"], input="n\n")
-    assert declined.exit_code == 1 and model.requests == []
+    assert declined.exit_code == 3 and model.requests == []
 
     result = runner.invoke(app, [*PHISH, "--live"], input="y\n")
 
@@ -83,3 +83,19 @@ def test_live_needs_a_configured_model() -> None:
 
     assert result.exit_code == 2
     assert "bastion init" in result.output
+
+
+def test_a_bad_json_path_is_refused_before_anything_runs(tmp_path: Path) -> None:
+    result = runner.invoke(app, [*PHISH, "--json", str(tmp_path / "missing" / "out.json")])
+
+    assert result.exit_code == 2
+    assert "is not a directory" in result.output
+
+
+def test_a_narrow_terminal_keeps_ids_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COLUMNS", "60")
+
+    result = runner.invoke(app, PHISH)
+
+    assert result.exit_code == 0
+    assert "email-forward-invoices" in result.output
