@@ -19,6 +19,22 @@ practical, and reporters are credited in the advisory unless they prefer otherwi
 
 Only the latest release receives security fixes while the project is pre-1.0.
 
+## Verifying a release
+
+Every release is built by [`release.yml`](.github/workflows/release.yml) from a tagged
+commit, and every artefact (wheel, sdist, CycloneDX SBOM, container image) carries a
+Sigstore-signed build-provenance attestation tied to this repository and that workflow.
+Check one before you install or run it (needs the [GitHub CLI](https://cli.github.com)):
+
+```sh
+gh attestation verify bastion-0.1.0-py3-none-any.whl --repo AryanVault/bastion
+gh attestation verify oci://ghcr.io/aryanvault/bastion:0.1.0 --repo AryanVault/bastion
+```
+
+A passing check proves the file was built by this repository's release workflow from the
+tagged commit, not that the commit is free of bugs. The SBOM
+(`bastion-<version>.cdx.json`) lists every dependency with its exact version and hashes.
+
 ## What counts as a vulnerability
 
 Bastion assumes the language model can be manipulated, so "I made the model say something odd" is
@@ -30,6 +46,8 @@ not a vulnerability by itself. These are:
 - Bypassing the Telegram owner allowlist or TOTP step-up
 - SSRF or URL-provenance bypasses in `web_fetch`
 - Secrets appearing in logs, the audit log, or model context
+- Reading secrets from the sealed file store without its master key
+- Escaping the container's restrictions (non-root, read-only, no capabilities)
 - Undetected tampering with the audit log
 - A scheduled task exceeding its capability grant or budget
 

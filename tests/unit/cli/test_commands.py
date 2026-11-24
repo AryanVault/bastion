@@ -277,3 +277,21 @@ def test_secrets_status_distinguishes_errors_from_missing(env: Env) -> None:
 
     assert "error" in result.output
     assert "missing" not in result.output
+
+
+def test_secrets_master_key_creates_a_key_file_once(env: Env, tmp_path: Path) -> None:
+    path = tmp_path / "master.key"
+
+    first = run(["secrets", "master-key", str(path)])
+    again = run(["secrets", "master-key", str(path)])
+
+    assert first.exit_code == 0, first.output
+    assert len(path.read_text(encoding="ascii").strip()) == 44  # base64 of 32 bytes
+    assert path.read_text(encoding="ascii").strip() not in first.output
+    assert again.exit_code == 1 and "already exists" in again.output
+
+
+def test_secrets_status_names_the_store(env: Env) -> None:
+    result = run(["secrets", "status"])
+
+    assert "Secrets are kept in" in result.output

@@ -1,0 +1,9 @@
+# Send only what the image needs: never local state, secrets, caches or the git history.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+**/__pycache__
+**/*.pyc

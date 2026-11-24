@@ -150,6 +150,37 @@ def _first(params: Mapping[str, list[str]], name: str) -> str:
     return values[0] if values else ""
 
 
+def code_from_redirect(address: str, state: str, redirect_uri: str) -> str:
+    """The sign-in code from the address Google sent the browser to.
+
+    For machines without a browser (servers, containers): the owner signs in on any device,
+    the browser then fails to load ``redirect_uri``, and the owner pastes that address back.
+    It must be for this redirect and carry this sign-in's ``state``; PKCE still binds the code
+    to this process, so a pasted code alone is useless to anyone else.
+    """
+    parts, expected = urlsplit(address.strip()), urlsplit(redirect_uri)
+    if (parts.scheme, parts.netloc) != (expected.scheme, expected.netloc) or parts.path not in (
+        "",
+        "/",
+    ):
+        raise OAuthError(f"that is not the sign-in address (it starts with {redirect_uri}/?)")
+    try:
+        params = parse_qs(parts.query, max_num_fields=10)
+    except ValueError as exc:
+        raise OAuthError("the address is malformed") from exc
+    received = _first(params, "state").encode("ascii", "replace")
+    if not hmac.compare_digest(received, state.encode("ascii")):
+        raise OAuthError("that address belongs to a different sign-in; start again")
+    error = _first(params, "error")
+    if error:
+        reason = error if _ERROR_CODE.fullmatch(error) else "unknown error"
+        raise OAuthError(f"Google sign-in was not completed ({reason})")
+    code = _first(params, "code")
+    if not _CODE.fullmatch(code):
+        raise OAuthError("Google returned a malformed sign-in code")
+    return code
+
+
 class LoopbackReceiver:
     """Receives the browser's redirect after sign-in, once, on 127.0.0.1."""
 

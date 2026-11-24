@@ -1,6 +1,8 @@
 """``bastion daemon`` runs the always-on Telegram bot; ``bastion resume`` lifts ``/stop``."""
 
 import asyncio
+import contextlib
+import signal
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -87,6 +89,7 @@ async def _serve(
     def warn(message: str) -> None:
         console.print(Text(f"! {message}", style="yellow"))
 
+    _stop_on_sigterm()
     try:
         me = await retry_transient(
             api.get_me,
@@ -122,6 +125,25 @@ async def _serve(
             await runtime.aclose()
 
 
+def _stop_on_sigterm() -> None:
+    """Treat SIGTERM (``docker stop``, ``systemctl stop``) like Ctrl+C: cancel the main task so
+    the bot finishes cleanly and the audit chain is checkpointed, instead of dying mid-write."""
+    if not hasattr(signal, "SIGTERM"):
+        return
+    loop = asyncio.get_running_loop()
+    main = asyncio.current_task()
+    if main is None:
+        return
+
+    def stop() -> None:
+        # Once only: a second SIGTERM must not interrupt the shutdown the first one started.
+        loop.remove_signal_handler(signal.SIGTERM)
+        main.cancel()
+
+    with contextlib.suppress(NotImplementedError, RuntimeError):  # Windows has no such handlers
+        loop.add_signal_handler(signal.SIGTERM, stop)
+
+
 def daemon() -> None:
     """Run Bastion on Telegram, always on (long polling: no open ports). Ctrl+C stops it."""
     console = Console()
@@ -136,7 +158,7 @@ def daemon() -> None:
         for notice in runtime.notices:
             console.print(Text(f"! {notice}", style="yellow"))
         asyncio.run(_serve(runtime, api, config, totp, console))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         console.print("Stopped.")
     except ConfigurationChanged as exc:
         raise _fail(console, f"Stopped: {exc}. Start it again with: bastion daemon") from exc

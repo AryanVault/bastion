@@ -392,3 +392,30 @@ def test_tracebacks_never_show_local_variables() -> None:
         telegram_cli.telegram_app,
     )
     assert all(typer_app.pretty_exceptions_show_locals is False for typer_app in apps)
+
+
+def test_no_browser_sign_in_takes_the_pasted_address(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from bastion.cli import google as google_cli
+
+    env.grants(ALL_SCOPES)
+    shown: list[str] = []
+
+    def paste(console: object, url: str, redirect_uri: str) -> str:
+        shown.append(url)
+        state = parse_qs(urlsplit(url).query)["state"][0]
+        return f"{redirect_uri}/?state={state}&code=4/0AbCdEf123"
+
+    monkeypatch.setattr(google_cli, "_paste_redirect", paste)
+
+    result = run(["google", "connect", "--no-browser"], stdin=CLIENT_INPUT)
+
+    assert result.exit_code == 0, result.output
+    assert env.browser.urls == []  # no browser was opened
+    assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A8765" in shown[0]
+    assert env.store.get(GOOGLE_REFRESH_TOKEN) == NEW_REFRESH
+    exchange = form_of(env.google.sent("POST", "/token")[0])
+    assert exchange["redirect_uri"] == "http://127.0.0.1:8765"

@@ -39,7 +39,7 @@ decides permissions.
 | Taint tracking of untrusted content | Prompt injection escalating into actions | Built |
 | Argument-bound, single-use, expiring approvals | Approve one thing, execute another | Built |
 | URL provenance + SSRF guard checked at connect time (DNS-rebinding safe) | Exfiltration via crafted URLs, internal network access | Built |
-| Secrets only in the OS keyring, plus redaction | Credential theft from disk, logs or model context | Built |
+| Secrets only in the OS keyring (on servers: a sealed file whose key lives elsewhere), plus redaction | Credential theft from disk, backups, logs or model context | Built |
 | HMAC-chained, append-only audit log | Silent tampering with the record of what happened | Built |
 | Encrypted memory with provenance bound into the ciphertext | Injected "remember this" instructions coming back as trusted | Built |
 | Step, tool-call and token budgets per request | Runaway or hijacked loops | Built |
@@ -52,6 +52,7 @@ decides permissions.
 | Quarantined email reader: a model with no tools summarises email for the planner | Attacker text steering the planner | Built |
 | Invitations untrusted; calendar changes checked against the live event before they run | Injection via invites, misdirected approvals | Built |
 | Scheduled tasks with fixed tool grants, budgets and sealed definitions; planting one needs your code | Autonomous tasks drifting, looping, or being planted by injected text | Built |
+| Hardened container (non-root, read-only, no capabilities); releases with an SBOM and Sigstore-signed provenance | Escalation after a compromise; tampered downloads | Built |
 | [Red-team suite](#red-team-results): 24 attacks against the real controls, run in CI | Regressions in any of the above | Built |
 
 Read the [threat model](docs/THREAT_MODEL.md) for the attackers, threats and accepted risks, and
@@ -124,7 +125,11 @@ uv run bastion chat
 
 Configuration lives in `~/.bastion` (override with `BASTION_HOME`). API keys are never written
 to disk by Bastion: they are stored in Windows Credential Manager, the macOS Keychain or the
-Linux Secret Service, and are only ever entered at hidden prompts.
+Linux Secret Service, and are only ever entered at hidden prompts. On a server or in a
+container, where there is no keyring, they go to a sealed file instead.
+
+To keep Bastion running (Docker on a server or Raspberry Pi, systemd, or at sign-in on
+Windows and macOS), follow [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ### Model providers
 
@@ -152,7 +157,7 @@ Web search uses the [Brave Search API](https://brave.com/search/api/) if you add
    name (email, invitations) and anything destructive then needs its 6-digit code as well as
    a tap on Approve.
 5. `uv run bastion daemon`: Bastion is online. It only makes outbound requests to Telegram; no
-   port is opened.
+   port is opened. To keep it running, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 In the chat: `/new` starts fresh, `/status` shows the safety state, `/cancel` abandons a request,
 and `/stop` is the emergency stop: Bastion refuses all work until you run `bastion resume` on
@@ -184,7 +189,9 @@ Choose how much Bastion may do; the default is `--gmail draft --calendar write`:
 Emails and invitations from other people are treated as untrusted, like web pages. When
 Bastion reads an email, the planning model sees a summary written by a separate model that has
 no tools, unless you ask for the exact text. `bastion google status` checks the connection;
-`bastion google disconnect` revokes it at Google and deletes it from your computer.
+`bastion google disconnect` revokes it at Google and deletes it from your computer. On a
+server with no browser, `bastion google connect --no-browser` lets you sign in on another
+device and paste the resulting address back.
 
 ### Scheduled tasks
 
@@ -225,6 +232,7 @@ has a step and token budget (plus a daily budget per task, set under `[autonomy]
 | `bastion audit tail` | Show recent audit entries |
 | `bastion secrets status` | Show which secrets are set (never their values) |
 | `bastion secrets set <name>` | Store a secret from a hidden prompt |
+| `bastion secrets master-key <file>` | Create the master key for the sealed file store (servers and containers) |
 
 ## Roadmap
 
@@ -234,7 +242,7 @@ has a step and token budget (plus a daily budget per task, set under `[autonomy]
 - [x] Phase 3: Gmail and Google Calendar
 - [x] Phase 4: autonomous scheduled tasks
 - [x] Phase 5a: red-team eval suite
-- [ ] Phase 5b: hardened Docker image, headless secrets, signed release
+- [x] Phase 5b: hardened Docker image, sealed secrets for servers, signed releases with an SBOM
 
 ## Development
 
@@ -247,6 +255,7 @@ uv run mypy                          # strict
 uv run bandit -c pyproject.toml -r src
 uv export --frozen --no-emit-project --format requirements.txt -o requirements-audit.txt
 uv run pip-audit --strict --disable-pip --require-hashes -r requirements-audit.txt
+docker build -t bastion .              # the hardened image (CI also smoke-tests it)
 ```
 
 ## Reporting a vulnerability

@@ -86,7 +86,7 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T11 | Over-broad Google access amplifies any compromise | EoP | All | The owner's own OAuth client; an access level per service, each asking for the fewest scopes; the level used is the lower of what was requested and what was granted; sending mail is opt-in; no email deletion, settings or contacts access (C9) |
 | T12 | Owner cannot tell what the agent did, or evidence is edited | Repudiation | A1, A5 | HMAC-chained audit log in SQLite, append-only triggers, `bastion audit verify` (C10) |
 | T13 | Scheduled task loops, burns money, or drifts beyond its purpose | DoS / EoP | A1 | Each task is granted a fixed set of tools and the model sees no others; per-run step, tool-call and token budgets plus a per-task 24-hour token budget; at most hourly; three failed runs in a row pause it; runs missed while offline are skipped, not replayed; no task starts while `/stop` is engaged, and `/cancel` or `/stop` ends a running one (C11) |
-| T14 | Poisoned dependency | All | A4 | Hash-locked dependencies, minimal dependency tree, pip-audit, Dependabot, CodeQL, SBOM, signed releases (C14) |
+| T14 | Poisoned dependency, or a tampered download | All | A4 | Hash-locked dependencies, minimal dependency tree, pip-audit, Dependabot (packages, actions and base images), CodeQL; actions pinned by commit and base images by digest; every release artefact and image has a CycloneDX SBOM and a Sigstore-signed build-provenance attestation the owner can verify (C14) |
 | T15 | Malicious tool-call arguments (wrong types, path tricks, header injection) | Tampering | A1 | Every tool's arguments validated by a strict Pydantic schema before policy evaluation |
 | T16 | Exposed network listener attacked | EoP | A2 | No inbound ports: Telegram long polling; the CLI runs in-process (no local IPC server). The one exception is the loopback listener during `bastion google connect` (T27) |
 | T17 | Model output misleads the owner on screen: ANSI escapes rewrite the terminal, bidi or zero-width characters disguise an approval's recipient, link text hides the real URL | Spoofing | A1 | Replies shown with control characters stripped; approval prompts show them as visible `\uXXXX`; links rendered with their real URL (C16) |
@@ -105,14 +105,16 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T30 | Google access leaks or outlives its purpose: a stolen refresh token, an access token in a log, a disconnect that leaves a running daemon connected | Info disclosure | A4, A5 | Refresh token only in the OS keyring; access tokens only in memory and registered for redaction; request logging silenced; transport errors raised without their cause; the keyring is re-checked before each use, so `bastion google disconnect` (which also revokes at Google) stops a running daemon; reconnecting revokes the previous token (C8, C9) |
 | T32 | Injected text plants a scheduled task, so the attack recurs every day without the owner watching (persistence) | Tampering / EoP | A1 | `task_schedule` always asks the owner and always needs the authenticator code, whatever the policy file says; it is refused outright once the conversation contains untrusted content; tasks can never be granted the task tools, so a task cannot create, change or remove tasks (C1, C4, C5, C11) |
 | T33 | A task runs while the owner is away and acts on what it reads: sends mail, invites people, deletes | EoP | A1 | Task mode in the policy engine: every send action needs approval (even if the policy file allows sends), destructive actions are refused once the run reads untrusted content, and the approval prompt names the task; each run starts with a fresh conversation, so taint and injected text do not carry over between runs (C1, C2, C11) |
-| T34 | Someone with write access to the database widens a task's grant, rewrites its instructions, or plants a task | Tampering | A5 | A task's definition (name, schedule, instructions, tools) is one AES-GCM document bound to its id, with the key in the OS keyring: an edited, transplanted or planted definition fails to decrypt, the task never runs, and the owner is told; claiming a run is a compare-and-set, so a run is never started twice (C11, C13) |
+| T34 | Someone with write access to the database widens a task's grant, rewrites its instructions, or plants a task | Tampering | A5 | A task's definition (name, schedule, instructions, tools) is one AES-GCM document bound to its id, with the key in the secret store: an edited, transplanted or planted definition fails to decrypt, the task never runs, and the owner is told; claiming a run is a compare-and-set, so a run is never started twice (C11, C13) |
 | T31 | Crafted email (deep MIME nesting, huge bodies, odd charsets, forged threading headers) slows or crashes the agent, or smuggles headers into a reply | DoS / Tampering | A1 | Limits on MIME depth and part count, response size and text length; HTML converted off the event loop; unknown charsets fall back to UTF-8; Message-IDs copied into a reply only if well formed; recipients are bare ASCII addresses and subjects single lines (C7, T15) |
+| T35 | On a server or in a container there is no OS keyring: secrets on disk are stolen with a backup or a copied volume | Info disclosure | A5 | The sealed file store: every secret is AES-GCM sealed under a master key kept outside Bastion's data folder (a Docker secret or a root-owned file; a key inside the folder is refused), with its name bound in as associated data so values cannot be swapped; a wrong key or an edited file fails closed; the audit anchor there is the off-machine checkpoint (see accepted risks) (C8, C10) |
+| T36 | Code running inside the daemon (a dependency bug, a parser exploit) tries to gain more | EoP | A4 | The container runs as an unprivileged user with a read-only root filesystem, every capability dropped, `no-new-privileges`, a process limit and no published ports; the systemd unit applies the equivalent sandboxing (C14) |
 
 ## 8. Controls index
 
 C1 policy engine (default-deny, risk tiers) · C2 taint tracking · C3 quarantined reader ·
 C4 argument-bound approvals · C5 TOTP step-up · C6 Telegram lockdown · C7 egress guard ·
-C8 secrets vault and redaction · C9 least-privilege OAuth · C10 tamper-evident audit log ·
+C8 secrets vault (OS keyring, or the sealed file store on servers) and redaction · C9 least-privilege OAuth · C10 tamper-evident audit log ·
 C11 autonomy guardrails · C12 memory provenance · C13 encryption at rest · C14 supply chain ·
 C15 red-team eval suite (verifies C1 to C13 against a corpus of attacks) ·
 C16 display safety (terminal and channel rendering of untrusted text).
@@ -186,6 +188,21 @@ Where each control lives in the code: [ARCHITECTURE.md](ARCHITECTURE.md#security
   says the owner organised and created it, it is an ordinary event, guests can neither edit it
   nor add people to it, and Bastion did not mark it. An event the owner typed up from someone
   else's text still counts as the owner's.
+- **On a server, the audit checkpoint lives beside the log.** The chain head checkpoint is
+  kept in the secret store; with the sealed file store that is the same disk as the audit
+  log, so someone who can write that disk (even without the master key) can delete the
+  checkpoint, or roll the log and the store back together, and `audit verify` alone will
+  not notice. There, the checkpoints the daemon sends to the owner on Telegram are the
+  anchor that matters: check with `bastion audit verify --checkpoint <entry>:<chain>`.
+  Rolling back the whole data folder also brings back older tasks and memories.
+- **The sealed file store is only as private as its master key.** Whoever can read both the
+  key and the data folder (root on the server, or code running as Bastion's user) can read
+  every secret, as code running as the owner can read the OS keyring on a desktop. Keep the
+  key out of backups of the data, and back it up separately: without it, the sealed secrets
+  cannot be recovered.
+- **Signed releases prove origin, not correctness.** An attestation shows an artefact was
+  built by this repository's release workflow from a tagged commit; it says nothing about
+  whether that commit is safe, and it relies on GitHub's identity infrastructure.
 - **A hijacked Telegram account can read what Bastion can read.** Step-up codes guard actions
   (sending mail, deleting), not reading: someone holding the owner's Telegram session can ask
   for email and calendar contents. `/stop` and `bastion telegram unpair` end that access.

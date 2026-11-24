@@ -463,3 +463,38 @@ async def test_a_malformed_url_does_not_break_the_listener() -> None:
         code = await receiver.wait(wait_seconds=5)
 
     assert code == "4/0AbCdEf123"
+
+
+# ------------------------------------------------------- headless sign-in
+
+
+REDIRECT = "http://127.0.0.1:8765"
+STATE = "s" * 43
+
+
+def test_a_pasted_redirect_yields_its_code() -> None:
+    from bastion.google.oauth import code_from_redirect
+
+    address = f"  {REDIRECT}/?state={STATE}&code=4/0AbCdEf123&scope=x  "
+
+    assert code_from_redirect(address, STATE, REDIRECT) == "4/0AbCdEf123"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("address", "reason"),
+    [
+        (f"{REDIRECT}/?state={'t' * 43}&code=4/0AbCdEf123", "different sign-in"),
+        (f"http://127.0.0.1:9999/?state={STATE}&code=4/0AbCdEf123", "not the sign-in address"),
+        (f"https://evil.example/?state={STATE}&code=4/0AbCdEf123", "not the sign-in address"),
+        (f"{REDIRECT}/other?state={STATE}&code=4/0AbCdEf123", "not the sign-in address"),
+        (f"{REDIRECT}/?state={STATE}&error=access_denied", "access_denied"),
+        (f"{REDIRECT}/?state={STATE}&code=<script>", "malformed"),
+        (f"{REDIRECT}/?" + "&".join(f"k{i}=v" for i in range(20)), "malformed"),
+    ],
+)
+def test_a_pasted_redirect_must_belong_to_this_sign_in(address: str, reason: str) -> None:
+    from bastion.google.oauth import OAuthError, code_from_redirect
+
+    with pytest.raises(OAuthError, match=reason):
+        code_from_redirect(address, STATE, REDIRECT)

@@ -1,0 +1,150 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 (matching the version in pyproject.toml) builds, tests, signs
+# and publishes a release. Every artefact gets a Sigstore-signed build-provenance attestation
+# (keyless, through GitHub's OIDC identity): see "Verifying a release" in SECURITY.md.
+#
+# Attestations need a public repository (or GitHub Enterprise Cloud for private ones): tag a
+# release only once the repository is public. Before the first release, protect `v*` tags with a
+# ruleset and give the `release` environment a required reviewer (repository settings).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Runs the repository's code (tests, the build backend) with read-only rights: nothing here
+  # can sign, push or publish.
+  build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      stable: ${{ steps.version.outputs.stable }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+
+      - name: The tag is on main and matches the package version
+        id: version
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          version="$(uv version --short)"
+          test "v${version}" = "${GITHUB_REF_NAME}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # Only plain X.Y.Z releases move :latest (not 1.0.0rc1, 1.0.0.dev2, ...).
+          if [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then stable=true; else stable=false; fi
+          echo "stable=${stable}" >> "$GITHUB_OUTPUT"
+
+      - name: Tests and the red-team suite pass on the tagged commit
+        run: |
+          uv sync --locked
+          uv run pytest -q
+          uv run bastion redteam
+
+      - name: Build the wheel, sdist and SBOM (CycloneDX, from the lockfile)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          uv build --out-dir dist
+          uv export --frozen --no-dev --format cyclonedx1.5 \
+            --output-file "dist/bastion-${VERSION}.cdx.json"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Signs and publishes. It runs no repository code on the runner: the image is built by
+  # BuildKit from the Dockerfile, which never sees this job's tokens.
+  publish:
+    name: Sign and publish
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write # create the GitHub release
+      packages: write # push the image to GHCR
+      id-token: write # sign attestations with the workflow's OIDC identity
+      attestations: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Attest the Python artefacts and SBOM
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the image (amd64 and arm64, e.g. a Raspberry Pi)
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}
+
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          {
+            echo "Container image: \`${IMAGE}:${VERSION}\` (\`${DIGEST}\`)"
+            echo
+            echo "Verify before use (see SECURITY.md):"
+            echo
+            echo '```sh'
+            echo "gh attestation verify bastion-${VERSION}-py3-none-any.whl --repo ${GITHUB_REPOSITORY}"
+            echo "gh attestation verify oci://${IMAGE}:${VERSION} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } > notes.md
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --verify-tag --title "Bastion ${VERSION}" --notes-file notes.md --generate-notes
+
+      # Last, so :latest only ever points at an attested, released image; never pre-releases.
+      - name: Point :latest at this release
+        if: needs.build.outputs.stable == 'true'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${DIGEST}"

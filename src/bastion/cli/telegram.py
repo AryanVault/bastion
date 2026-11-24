@@ -64,7 +64,7 @@ async def _get_me(api: TelegramApi) -> User:
 
 @telegram_app.command("setup")
 def setup_bot() -> None:
-    """Store your bot's token (from @BotFather) in the OS keyring, after checking it."""
+    """Store your bot's token (from @BotFather) as a secret, after checking it."""
     console = Console()
     with audit_session(console) as audit:
         token = typer.prompt("Bot token from @BotFather (input hidden)", hide_input=True).strip()

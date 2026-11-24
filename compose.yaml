@@ -1,0 +1,35 @@
+# Bastion on a server (VPS, Raspberry Pi, home server). See docs/DEPLOYMENT.md.
+#
+#   bastion secrets master-key ./bastion_master_key        # or any machine with Bastion
+#   sudo chown 10001:10001 bastion_master_key              # readable by the container's user
+#   docker compose run --rm bastion init                   # then telegram setup / pair / totp
+#   docker compose up -d
+services:
+  bastion:
+    image: ghcr.io/aryanvault/bastion:latest
+    build: .
+    restart: unless-stopped
+    init: true                     # forwards SIGTERM so the daemon stops cleanly
+    read_only: true                # nothing outside /data and /tmp can be written
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+    pids_limit: 128
+    mem_limit: 768m
+    stop_grace_period: 20s
+    volumes:
+      - bastion-data:/data
+    secrets:
+      - bastion_master_key
+    # Bastion only makes outbound connections (Telegram long polling, the model provider,
+    # Google, search): no ports are published.
+
+secrets:
+  bastion_master_key:
+    file: ./bastion_master_key     # keep it out of backups of the data volume
+
+volumes:
+  bastion-data:

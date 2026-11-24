@@ -35,12 +35,14 @@ from bastion.google.grant import (
     save_grant,
 )
 from bastion.google.oauth import (
+    LOOPBACK_HOST,
     AuthRevoked,
     ClientCredentials,
     LoopbackReceiver,
     OAuthError,
     TokenGrant,
     authorization_url,
+    code_from_redirect,
     exchange_code,
     new_pkce,
     refresh_access,
@@ -53,7 +55,7 @@ from bastion.security.vault import GOOGLE_REFRESH_TOKEN, Vault, VaultError
 
 google_app = typer.Typer(
     pretty_exceptions_show_locals=False,  # tracebacks must never print secrets
-    help="Connect Gmail and Google Calendar (tokens stay in the OS keyring).",
+    help="Connect Gmail and Google Calendar (tokens stay in your secret store).",
     no_args_is_help=True,
 )
 
@@ -77,6 +79,8 @@ CALENDAR_ACCESS = {
     "write": "list, create, change and delete events",
 }
 REVOKE_PAGE = "https://myaccount.google.com/permissions"
+# The redirect for --no-browser sign-ins: nothing listens on it, the owner pastes it back.
+NO_BROWSER_PORT = 8765
 
 
 class _FixedToken:
@@ -137,12 +141,39 @@ def _client(console: Console, vault: Vault, new_client: bool) -> ClientCredentia
     return credentials
 
 
+def _paste_redirect(console: Console, url: str, redirect_uri: str) -> str:
+    console.print("On any device, open this address and sign in with Google:")
+    console.print(url, markup=False, highlight=False, soft_wrap=True)
+    console.print(
+        f"Your browser then fails to open a page starting with {redirect_uri}/?state=... "
+        "That is expected: copy that whole address from the address bar."
+    )
+    return str(typer.prompt("Paste the address here (input hidden)", hide_input=True))
+
+
 async def _sign_in(
-    console: Console, credentials: ClientCredentials, scopes: tuple[str, ...], port: int
+    console: Console,
+    credentials: ClientCredentials,
+    scopes: tuple[str, ...],
+    port: int,
+    *,
+    no_browser: bool = False,
 ) -> tuple[TokenGrant, str]:
     """Run the browser sign-in. Returns the tokens and the redirect URI that was used."""
     state = secrets.token_urlsafe(32)
     pkce = new_pkce()
+    if no_browser:
+        redirect_uri = f"http://{LOOPBACK_HOST}:{port or NO_BROWSER_PORT}"
+        url = authorization_url(credentials.client_id, redirect_uri, scopes, state, pkce.challenge)
+        # Called directly, not in a thread: nothing else runs meanwhile, and a blocked
+        # worker thread would make Ctrl+C hang until Enter.
+        pasted = _paste_redirect(console, url, redirect_uri)
+        code = code_from_redirect(pasted, state, redirect_uri)
+        async with deps.google_http() as http:
+            tokens = await exchange_code(
+                http, credentials, code=code, verifier=pkce.verifier, redirect_uri=redirect_uri
+            )
+        return tokens, redirect_uri
     async with deps.google_http() as http:
         async with LoopbackReceiver(state, port=port) as receiver:
             url = authorization_url(
@@ -177,8 +208,10 @@ async def _connect(
     gmail: GmailLevel,
     calendar: CalendarLevel,
     port: int,
+    no_browser: bool = False,
 ) -> tuple[TokenGrant, Grant]:
-    tokens, _ = await _sign_in(console, credentials, requested_scopes(gmail, calendar), port)
+    scopes = requested_scopes(gmail, calendar)
+    tokens, _ = await _sign_in(console, credentials, scopes, port, no_browser=no_browser)
     granted = tokens.access.scopes
     grant_gmail = effective_gmail(gmail, granted)
     grant_calendar = effective_calendar(calendar, granted)
@@ -245,6 +278,13 @@ def connect(
     new_client: Annotated[
         bool, typer.Option("--new-client", help="Enter a different OAuth client.")
     ] = False,
+    no_browser: Annotated[
+        bool,
+        typer.Option(
+            "--no-browser",
+            help="For servers and containers: sign in on another device, paste the address back.",
+        ),
+    ] = False,
 ) -> None:
     """Sign in with Google and choose what Bastion may do."""
     console = Console()
@@ -260,7 +300,7 @@ def connect(
             raise _fail(console, str(exc)) from exc
         try:
             tokens, grant = asyncio.run(
-                _connect(console, credentials, gmail_level, calendar_level, port)
+                _connect(console, credentials, gmail_level, calendar_level, port, no_browser)
             )
         except (OAuthError, GoogleApiError) as exc:
             audit.append("google.connect_failed", {"error": str(exc)[:200]})
