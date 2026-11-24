@@ -43,12 +43,12 @@
 
   /* ------------------------------------------------------------ scroll reveals */
   if (motion) {
-    const groups = [".sec-head", ".asks", ".yours", ".steps", ".hidden-demo", ".filters",
-      ".pipe", ".built", ".term", ".legend", ".plain", ".more"];
+    const groups = [".sec-head", ".asks", ".compare-wrap", ".fit", ".steps", ".hidden-demo",
+      ".filters", ".pipe", ".built", ".term", ".legend", ".more", ".final-in"];
     for (const sel of groups) {
       for (const group of $$(sel)) {
         if (!belowFold(group)) continue;
-        const kids = group.matches(".asks, .yours, .built") ? Array.from(group.children) : [group];
+        const kids = group.matches(".asks, .built, .fit") ? Array.from(group.children) : [group];
         kids.forEach((kid, i) => {
           kid.classList.add("rv");
           kid.style.setProperty("--d", `${Math.min(i, 6) * 80}ms`);
