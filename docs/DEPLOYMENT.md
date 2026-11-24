@@ -33,7 +33,9 @@ built for `amd64` and `arm64` (a Raspberry Pi 4 or 5 runs it fine).
    sudo chown 10001:10001 bastion_master_key
    ```
 
-   (Or, on any machine with Bastion installed: `bastion secrets master-key <file>`.)
+   (Or, on any machine with Bastion installed: `bastion secrets master-key <file>`, then the
+   same `chown`.) Rootless Docker and Podman map user ids differently: there, make the key
+   readable by the user the container's uid 10001 maps to.
    **Back the key up somewhere other than the data volume.** Without it, the secrets sealed
    with it are gone and Bastion has to be set up again.
 3. Set up, interactively (each step stores its secrets in the sealed file):
@@ -78,11 +80,16 @@ sudo chown root:bastion /etc/bastion/master.key && sudo chmod 0440 /etc/bastion/
 Set up as that user, with the same environment the service will have:
 
 ```sh
-alias bastion='sudo -u bastion BASTION_HOME=/var/lib/bastion/data BASTION_SECRET_STORE=file \
-  BASTION_MASTER_KEY_FILE=/etc/bastion/master.key /var/lib/bastion/app/.venv/bin/bastion'
+bastion() {
+  sudo -u bastion BASTION_HOME=/var/lib/bastion/data BASTION_SECRET_STORE=file \
+    BASTION_MASTER_KEY_FILE=/etc/bastion/master.key /var/lib/bastion/app/.venv/bin/bastion "$@"
+}
 bastion init && bastion telegram setup && bastion telegram pair && bastion telegram totp
 bastion google connect --no-browser   # optional
 ```
+
+(`uv` must be on the `bastion` user's `PATH` for the `uv sync` above; `bastion init` creates
+`/var/lib/bastion/data`, which the unit below needs to exist.)
 
 Then add `/etc/systemd/system/bastion.service`:
 
@@ -101,6 +108,7 @@ Environment=BASTION_MASTER_KEY_FILE=/etc/bastion/master.key
 ExecStart=/var/lib/bastion/app/.venv/bin/bastion daemon
 Restart=on-failure
 RestartSec=10
+UMask=0077
 # Hardening: the service can write only its own data folder.
 NoNewPrivileges=yes
 ProtectSystem=strict

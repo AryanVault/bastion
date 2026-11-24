@@ -1,4 +1,5 @@
 import base64
+import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -177,3 +178,30 @@ def test_misconfigured_stores_explain_themselves_on_use(
         store.set("a.b", "v")
     with pytest.raises(VaultError):
         store.delete("a.b")
+
+
+def test_reading_an_absent_store_does_not_create_it(tmp_path: Path) -> None:
+    store = sealed(tmp_path)
+
+    assert store.get("llm.anthropic.api_key") is None
+    store.delete("llm.anthropic.api_key")
+
+    assert not store.path.exists()
+
+
+def test_a_key_with_stray_characters_is_refused() -> None:
+    text = base64.b64encode(KEY).decode()
+
+    with pytest.raises(VaultError):
+        parse_master_key(text[:10] + "!*" + text[10:])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions")
+def test_the_store_and_new_key_files_are_private(tmp_path: Path) -> None:
+    store = sealed(tmp_path)
+    store.set("a.b", "v")
+    key = tmp_path / "master.key"
+    write_master_key(key)
+
+    assert store.path.stat().st_mode & 0o777 == 0o600
+    assert key.stat().st_mode & 0o777 == 0o600

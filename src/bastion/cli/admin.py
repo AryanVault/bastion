@@ -1,5 +1,6 @@
 """Administrative commands: ``bastion audit``, ``bastion secrets``, ``bastion policy``."""
 
+import os
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -223,7 +224,8 @@ def secrets_master_key(
         raise _fail(console, f"{path} already exists; it was left unchanged.") from exc
     except OSError as exc:
         raise _fail(console, f"Could not create {path}: {exc.strerror}") from exc
-    console.print(Text(f"Created {path} (readable only by you). Keep a copy somewhere safe:"))
+    private = " (readable only by you)" if os.name == "posix" else ""
+    console.print(Text(f"Created {path}{private}. Keep a copy somewhere safe:"))
     console.print("without it, the secrets sealed with it cannot be recovered.")
 
 

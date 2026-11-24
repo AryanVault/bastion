@@ -37,11 +37,11 @@ def parse_master_key(text: str) -> bytes:
     candidates: list[bytes] = []
     with contextlib.suppress(ValueError):
         candidates.append(bytes.fromhex(value))
-    for decode in (base64.b64decode, base64.urlsafe_b64decode):
-        try:
-            candidates.append(decode(value + "=" * (-len(value) % 4)))
-        except (binascii.Error, ValueError):
-            continue
+    # Strict base64 (standard or URL-safe alphabet): a corrupted file must not quietly
+    # decode to some other key.
+    padded = value.replace("-", "+").replace("_", "/") + "=" * (-len(value) % 4)
+    with contextlib.suppress(binascii.Error, ValueError):
+        candidates.append(base64.b64decode(padded, validate=True))
     for key in candidates:
         if len(key) == KEY_BYTES:
             return key
@@ -68,10 +68,16 @@ def new_master_key() -> str:
 
 
 def write_master_key(path: Path) -> None:
-    """Create ``path`` holding a new master key, readable only by its owner. Never overwrites."""
+    """Create ``path`` holding a new master key (on POSIX, readable only by its owner).
+
+    Never overwrites; a file left half-written by a failure is removed."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="ascii") as handle:
-        handle.write(new_master_key() + "\n")
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(new_master_key() + "\n")
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 class SealedStore:
@@ -96,11 +102,11 @@ class SealedStore:
     def _db(self) -> Iterator[sqlite3.Connection]:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
+            # Created private from the start, not chmod-ed after SQLite made it.
+            os.close(os.open(self._path, os.O_WRONLY | os.O_CREAT, 0o600))
             with closing(
                 sqlite3.connect(self._path, timeout=_BUSY_TIMEOUT_SECONDS, isolation_level=None)
             ) as conn:
-                if os.name == "posix":
-                    self._path.chmod(0o600)
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS secrets "
                     "(name TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT"
@@ -112,6 +118,8 @@ class SealedStore:
 
     def get(self, name: str) -> str | None:
         cipher = self._seal()  # a bad master key fails here, before the file is touched
+        if not self._path.exists():
+            return None  # reading never creates the store
         with self._db() as conn:
             row = conn.execute("SELECT value FROM secrets WHERE name = ?", (name,)).fetchone()
         if row is None:
@@ -135,6 +143,8 @@ class SealedStore:
 
     def delete(self, name: str) -> None:
         self._seal()
+        if not self._path.exists():
+            return
         with self._db() as conn:
             conn.execute("DELETE FROM secrets WHERE name = ?", (name,))
 
@@ -171,7 +181,11 @@ def store_from_environment(home: Path) -> SecretStore:
     if not key_file:
         return UnavailableStore(f"{STORE_ENV}=file needs {MASTER_KEY_ENV} (the master key file)")
     key_path = Path(key_file).expanduser()
-    if key_path.resolve().is_relative_to(home.resolve()):
+    try:
+        inside_home = key_path.resolve().is_relative_to(home.resolve())
+    except (OSError, RuntimeError) as exc:  # e.g. a symlink loop
+        return UnavailableStore(f"cannot resolve {MASTER_KEY_ENV} ({type(exc).__name__})")
+    if inside_home:
         return UnavailableStore(
             f"keep the master key outside {home}: a copy of that folder must not unlock it"
         )

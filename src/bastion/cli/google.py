@@ -165,7 +165,9 @@ async def _sign_in(
     if no_browser:
         redirect_uri = f"http://{LOOPBACK_HOST}:{port or NO_BROWSER_PORT}"
         url = authorization_url(credentials.client_id, redirect_uri, scopes, state, pkce.challenge)
-        pasted = await asyncio.to_thread(_paste_redirect, console, url, redirect_uri)
+        # Called directly, not in a thread: nothing else runs meanwhile, and a blocked
+        # worker thread would make Ctrl+C hang until Enter.
+        pasted = _paste_redirect(console, url, redirect_uri)
         code = code_from_redirect(pasted, state, redirect_uri)
         async with deps.google_http() as http:
             tokens = await exchange_code(

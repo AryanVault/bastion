@@ -134,8 +134,14 @@ def _stop_on_sigterm() -> None:
     main = asyncio.current_task()
     if main is None:
         return
+
+    def stop() -> None:
+        # Once only: a second SIGTERM must not interrupt the shutdown the first one started.
+        loop.remove_signal_handler(signal.SIGTERM)
+        main.cancel()
+
     with contextlib.suppress(NotImplementedError, RuntimeError):  # Windows has no such handlers
-        loop.add_signal_handler(signal.SIGTERM, main.cancel)
+        loop.add_signal_handler(signal.SIGTERM, stop)
 
 
 def daemon() -> None:
