@@ -80,3 +80,33 @@ jobs:
           tar -xzf "$archive" gitleaks
       - name: Scan the full git history
         run: ./gitleaks git --redact --verbose --exit-code 1 .
+
+  container:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: docker build --tag bastion:ci .
+      - name: Runs as an unprivileged user
+        run: test "$(docker run --rm --entrypoint id bastion:ci -u)" = "10001"
+      # The same flags as compose.yaml: read-only root, no capabilities, no privilege gain.
+      - name: Red-team suite inside the hardened container
+        run: >-
+          docker run --rm --read-only --tmpfs /tmp --cap-drop ALL
+          --security-opt no-new-privileges:true bastion:ci redteam
+      - name: Set up and check the sealed secret store
+        run: |
+          head -c 32 /dev/urandom | base64 > master.key
+          chmod 0444 master.key  # CI only: lets the container's user read the mounted key
+          docker volume create bastion-ci
+          hardened=(--rm --read-only --tmpfs /tmp --cap-drop ALL
+            --security-opt no-new-privileges:true -v bastion-ci:/data
+            -v "$PWD/master.key:/run/secrets/bastion_master_key:ro")
+          echo | docker run -i "${hardened[@]}" bastion:ci init --provider ollama --model llama3
+          docker run "${hardened[@]}" bastion:ci secrets status | tee status.txt
+          grep -q "encrypted file" status.txt
+          grep -q "audit.hmac_key.*set" status.txt
+          docker run "${hardened[@]}" bastion:ci audit verify

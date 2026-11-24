@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -18,6 +19,7 @@ from bastion.runtime import open_audit_log
 from bastion.security.audit import MIN_CHECKPOINT_CHARS, AuditLog, parse_checkpoint
 from bastion.security.policy import PolicyError, load_policy
 from bastion.security.redact import Redactor
+from bastion.security.sealed_store import describe_store, write_master_key
 from bastion.security.vault import (
     AUDIT_KEY,
     BRAVE_API_KEY,
@@ -44,7 +46,7 @@ audit_app = typer.Typer(
 )
 secrets_app = typer.Typer(
     pretty_exceptions_show_locals=False,  # tracebacks must never print secrets
-    help="Manage secrets in the OS keyring (values are never shown).",
+    help="Manage secrets in the OS keyring or sealed file store (values are never shown).",
     no_args_is_help=True,
 )
 policy_app = typer.Typer(
@@ -174,12 +176,12 @@ def secrets_set(
         _vault().set(name, value)
     except VaultError as exc:
         raise _fail(console, str(exc)) from exc
-    console.print(f"Stored {escape(name)} in the OS keyring.")
+    console.print(f"Stored {escape(name)}.")
 
 
 @secrets_app.command("delete")
 def secrets_delete(name: Annotated[str, typer.Argument(help="Secret name.")]) -> None:
-    """Delete a secret from the OS keyring."""
+    """Delete a secret."""
     console = Console()
     try:
         _vault().delete(name)
@@ -191,7 +193,10 @@ def secrets_delete(name: Annotated[str, typer.Argument(help="Secret name.")]) ->
 @secrets_app.command("status")
 def secrets_status() -> None:
     """Show which secrets are set. Values are never displayed."""
-    vault = _vault()
+    store = deps.secret_store()
+    vault = Vault(store, Redactor())
+    console = Console()
+    console.print(Text(f"Secrets are kept in {describe_store(store)}."))
     table = Table("secret", "status")
     for name in _known_secret_names():
         try:
@@ -199,7 +204,27 @@ def secrets_status() -> None:
         except VaultError as exc:  # e.g. a locked keyring: not the same thing as "missing"
             status = f"[red]error[/]: {escape(str(exc))}"
         table.add_row(name, status)
-    Console().print(table)
+    console.print(table)
+
+
+@secrets_app.command("master-key")
+def secrets_master_key(
+    path: Annotated[Path, typer.Argument(help="Where to create the key file (must not exist).")],
+) -> None:
+    """Create a master key for the sealed file store (servers and containers).
+
+    Keep it outside Bastion's data folder, then set BASTION_SECRET_STORE=file and
+    BASTION_MASTER_KEY_FILE to its path. The key is written to the file, never shown.
+    """
+    console = Console()
+    try:
+        write_master_key(path)
+    except FileExistsError as exc:
+        raise _fail(console, f"{path} already exists; it was left unchanged.") from exc
+    except OSError as exc:
+        raise _fail(console, f"Could not create {path}: {exc.strerror}") from exc
+    console.print(Text(f"Created {path} (readable only by you). Keep a copy somewhere safe:"))
+    console.print("without it, the secrets sealed with it cannot be recovered.")
 
 
 # ------------------------------------------------------------------- policy

@@ -8,14 +8,17 @@ import webbrowser
 
 import httpx2
 
+from bastion.config import bastion_home
 from bastion.google.api import google_client
 from bastion.llm.types import LLMProvider
-from bastion.security.vault import KeyringStore, SecretStore
+from bastion.security.sealed_store import store_from_environment
+from bastion.security.vault import SecretStore
 from bastion.telegram.api import BotApi, TelegramApi
 
 
 def secret_store() -> SecretStore:
-    return KeyringStore()
+    """The OS keyring, or the sealed file store on servers (``BASTION_SECRET_STORE=file``)."""
+    return store_from_environment(bastion_home())
 
 
 def provider_override() -> LLMProvider | None:

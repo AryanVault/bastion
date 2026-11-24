@@ -111,7 +111,7 @@ def init(
     base_url: Annotated[str | None, typer.Option(help="API base URL (custom providers).")] = None,
     force: Annotated[bool, typer.Option("--force", help="Reconfigure an existing setup.")] = False,
 ) -> None:
-    """Set up Bastion: pick a model provider and store keys in the OS keyring."""
+    """Set up Bastion: pick a model provider and store its keys as secrets."""
     console = Console()
     home = bastion_home()
     if (home / CONFIG_FILE).exists() and not force:

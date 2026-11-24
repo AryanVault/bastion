@@ -63,6 +63,7 @@ policy, one audit log and one set of controls.
 | `security/egress.py` | URL normalisation, IP checks, connect-time guard, provenance |
 | `security/audit.py` | HMAC-chained audit log and verification |
 | `security/vault.py` | OS keyring access; registers secrets for redaction |
+| `security/sealed_store.py` | The sealed file store for servers and containers (`BASTION_SECRET_STORE=file`) |
 | `security/redact.py` | Secret patterns and registered values |
 | `security/crypto.py` | AES-256-GCM field encryption with context binding |
 | `storage/db.py` | SQLite (WAL), migrations, append-only triggers |
@@ -108,14 +109,14 @@ policy, one audit log and one set of controls.
 | C5 TOTP step-up | `security/totp.py`, `telegram/approver.py`, `security/policy.py` (`_STEP_UP_FLOOR`, `always_step_up`), `tools/gmail.py::GmailSendTool.step_up` | `test_totp.py`, `telegram/test_approver.py`, `test_bot.py` |
 | C6 Telegram lockdown | `telegram/pairing.py`, `telegram/bot.py::_on_message`, `telegram/api.py` | `test_pairing.py`, `test_bot.py`, `telegram/test_api.py` |
 | C7 egress guard | `security/egress.py`, `tools/web_fetch.py` | `test_egress.py`, `test_web_fetch.py` |
-| C8 vault and redaction | `security/vault.py`, `security/redact.py`, `llm/factory.py`, `google/oauth.py::GoogleAuth`, `google/api.py` | `test_vault.py`, `test_redact.py`, `test_factory.py`, `test_oauth.py`, `google/test_api.py` |
+| C8 vault and redaction | `security/vault.py`, `security/sealed_store.py`, `security/redact.py`, `llm/factory.py`, `google/oauth.py::GoogleAuth`, `google/api.py` | `test_vault.py`, `test_sealed_store.py`, `test_redact.py`, `test_factory.py`, `test_oauth.py`, `google/test_api.py` |
 | C9 least-privilege OAuth | `google/grant.py`, `runtime.py::build_google_tools`, `cli/google.py`, `google/oauth.py::LoopbackReceiver` | `test_grant.py`, `test_runtime.py`, `test_google_commands.py`, `test_oauth.py` |
 | C10 audit log | `security/audit.py`, `storage/db.py`, `security/vault.py::VaultAnchor` (checkpoint), `telegram/bot.py::_checkpoint` (off-machine copy) | `test_audit.py`, `test_commands.py`, `test_telegram_commands.py` |
 | C11 budgets, rate limit, kill switch | `core/agent.py::AgentLimits`, `security/ratelimit.py`, `security/killswitch.py` | `test_agent.py`, `test_killswitch_ratelimit.py`, `test_bot.py` |
 | C11 scheduled tasks: grants, task mode, budgets | `autonomy/`, `security/policy.py::PolicyEngine.for_task`, `runtime.py::Runtime.task_agent`, `tools/tasks.py` (`always_ask`, `clean_only`), `telegram/bot.py::check_schedule` | `tests/unit/autonomy/`, `test_policy.py`, `tools/test_tasks.py`, `test_runtime.py`, `test_bot.py`, `test_task_commands.py` |
 | C12 memory provenance | `tools/memory.py`, `storage/memory_bank.py`; calendar origin marker in `tools/calendar.py` | `tests/unit/tools/test_memory.py`, `tools/test_calendar.py` |
 | C13 encryption at rest | `security/crypto.py`, `storage/memory_bank.py`, `autonomy/tasks.py` | `test_crypto.py`, `test_memory.py`, `autonomy/test_tasks.py` |
-| C14 supply chain | `uv.lock`, `.github/workflows/` | CI |
+| C14 supply chain and runtime hardening | `uv.lock`, `.github/workflows/` (CI, the container smoke test, `release.yml`: SBOM, attestations), `Dockerfile`, `compose.yaml`, `.github/dependabot.yml` | CI |
 | C15 red-team suite | `redteam/`, `cli/redteam.py`; uses `runtime.py::google_tool_set`, `with_task_tools` so the sandbox is wired like production | `tests/unit/redteam/test_harness.py` (every scenario, plus mutation tests), `cli/test_redteam_command.py` |
 | C16 display safety | `text.py`, `core/agent.py::_accept`, `cli/approver.py`, `cli/chat.py`, `telegram/text.py`, `telegram/api.py` (no markup, no link previews), `google/mail.py` (bare ASCII addresses) | `test_text.py`, `test_approver.py`, `test_agent.py`, `telegram/test_text.py`, `telegram/test_api.py`, `test_mail.py` |
 
@@ -129,6 +130,7 @@ Tests that simulate an attack are marked `@pytest.mark.security` (`uv run pytest
 | `~/.bastion/policy.toml` | The owner's policy (cannot weaken the code-enforced floors) |
 | `~/.bastion/bastion.db` | SQLite: `audit_log` (HMAC chain, append-only triggers), `memories` (AES-GCM), `tasks` (definitions sealed with AES-GCM; next run, paused and failure count in clear), `task_runs` (outcome, tokens, tool calls) |
 | `~/.bastion/STOPPED` | Present while the kill switch is engaged (`/stop`); removed by `bastion resume` |
+| `~/.bastion/secrets.db` (servers only) | The same secrets as the keyring row below, each AES-GCM sealed under the master key from `BASTION_MASTER_KEY_FILE`, which lives outside this folder |
 | OS keyring, service `bastion` | LLM and search API keys, `audit.hmac_key`, `storage.encryption_key`, `audit.chain_head`, `telegram.bot_token`, `telegram.owner`, `auth.totp_secret`, `google.client_id`, `google.client_secret`, `google.refresh_token`, `google.grant` (account and access levels) |
 | Google Calendar | Events Bastion wrote from untrusted content carry `extendedProperties.private.bastion_origin = untrusted` |
 

@@ -1,3 +1,5 @@
+import asyncio
+import sys
 from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass
@@ -355,3 +357,41 @@ def test_unpairing_stops_a_running_daemon(env: Env) -> None:
     assert "account or the authenticator changed" in flat(result)
     assert len(api.texts) == 1 and api.texts[0].startswith("Bastion is online")
     assert api.closed
+
+
+# --------------------------------------------------------------- stopping
+
+
+def _forget_sigterm() -> None:
+    import contextlib
+    import signal
+
+    with contextlib.suppress(NotImplementedError, RuntimeError, AttributeError):
+        asyncio.get_running_loop().remove_signal_handler(signal.SIGTERM)
+
+
+async def test_installing_the_stop_handler_never_fails() -> None:
+    from bastion.cli.daemon import _stop_on_sigterm
+
+    _stop_on_sigterm()  # a no-op where the platform has no such handlers (Windows)
+    _forget_sigterm()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+async def test_sigterm_stops_the_daemon_like_ctrl_c() -> None:
+    import os
+    import signal
+
+    from bastion.cli.daemon import _stop_on_sigterm
+
+    async def serve() -> None:
+        _stop_on_sigterm()
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(5)
+
+    task = asyncio.create_task(serve())
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        _forget_sigterm()
