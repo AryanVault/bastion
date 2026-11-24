@@ -15,7 +15,6 @@ update must never wedge the bot.
 """
 
 import asyncio
-import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ from typing import Any, Protocol
 
 import httpx2
 
+from bastion.net import quiet_request_logs
 from bastion.security.egress import USER_AGENT
 
 API_BASE = "https://api.telegram.org"
@@ -35,7 +35,6 @@ MAX_RETRY_WAIT_SECONDS = 60.0
 ALLOWED_UPDATES = ("message", "callback_query")
 
 _TOKEN = re.compile(r"^\d{5,15}:[A-Za-z0-9_-]{30,80}$")
-_REQUEST_LOGGERS = ("httpx2", "httpcore2")
 _MAX_DETAIL = 200
 _UNAUTHORIZED = frozenset({401, 404})  # a revoked token gets 401; a malformed one 404
 
@@ -220,13 +219,6 @@ class TelegramApi(Protocol):
     async def aclose(self) -> None: ...
 
 
-def _quiet_request_logs() -> None:
-    for name in _REQUEST_LOGGERS:
-        logger = logging.getLogger(name)
-        if logger.level < logging.WARNING:
-            logger.setLevel(logging.WARNING)
-
-
 def _check_text(text: str) -> None:
     if not text.strip():
         raise ValueError("Telegram messages cannot be empty")
@@ -256,7 +248,7 @@ class BotApi:
     ) -> None:
         if not valid_token(token):
             raise ValueError("that does not look like a Telegram bot token")
-        _quiet_request_logs()
+        quiet_request_logs()
         self._url = f"{base_url}/bot{token}/"
         self._client = client or httpx2.AsyncClient(
             trust_env=False,  # a proxy would see the token

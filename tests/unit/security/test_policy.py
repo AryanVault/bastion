@@ -145,3 +145,18 @@ def test_invalid_toml_is_reported_as_policy_error() -> None:
 
 def test_default_policy_matches_the_shipped_toml() -> None:
     assert parse_policy(DEFAULT_POLICY_TOML) == default_policy()
+
+
+@pytest.mark.security
+def test_a_tool_can_demand_step_up_whatever_its_tier() -> None:
+    from bastion.core.conversation import TaintState
+    from bastion.security.policy import PolicyEngine, Verdict, default_policy
+    from bastion.tools.base import RiskTier
+
+    engine = PolicyEngine(default_policy(), frozenset({"gmail_send"}))
+
+    demanded = engine.decide("gmail_send", RiskTier.SEND, TaintState(), always_step_up=True)
+    ordinary = engine.decide("gmail_send", RiskTier.SEND, TaintState())
+
+    assert demanded.verdict is Verdict.ASK and demanded.step_up
+    assert ordinary.verdict is Verdict.ASK and not ordinary.step_up

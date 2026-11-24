@@ -11,12 +11,16 @@ from bastion.config import (
     render_config,
 )
 from bastion.core.conversation import Conversation
-from bastion.runtime import open_runtime
+from bastion.google.grant import CalendarLevel, GmailLevel, Grant, save_client, save_grant
+from bastion.google.oauth import ClientCredentials
+from bastion.runtime import GOOGLE_OFF_NOTICE, open_runtime
 from bastion.security.policy import DEFAULT_POLICY_TOML
 from bastion.security.redact import Redactor
 from bastion.security.vault import (
     AUDIT_KEY,
     BRAVE_API_KEY,
+    GOOGLE_GRANT,
+    GOOGLE_REFRESH_TOKEN,
     STORAGE_KEY,
     MemoryStore,
     MissingSecretError,
@@ -56,7 +60,7 @@ def test_web_search_is_enabled_when_a_key_is_stored(tmp_path: Path) -> None:
     runtime = open_runtime(home, store, provider=ScriptedProvider())
     try:
         assert "web_search" in runtime.tools.names
-        assert runtime.notices == ()
+        assert not any("Brave" in notice for notice in runtime.notices)
     finally:
         runtime.close()
 
@@ -86,3 +90,101 @@ def test_missing_keys_tell_the_owner_to_run_init(tmp_path: Path) -> None:
 
     with pytest.raises(MissingSecretError, match="bastion init"):
         open_runtime(home, store, provider=ScriptedProvider())
+
+
+# ------------------------------------------------------------------- Google
+
+GOOGLE_TOOLS = ("gmail_", "calendar_")
+ALL_GOOGLE = {
+    "gmail_search",
+    "gmail_read",
+    "gmail_draft",
+    "gmail_send",
+    "calendar_list_events",
+    "calendar_create_event",
+    "calendar_update_event",
+    "calendar_delete_event",
+}
+
+
+def connect_google(store: MemoryStore, gmail: GmailLevel, calendar: CalendarLevel) -> None:
+    vault = Vault(store, Redactor())
+    client_id = "123456789-abcdefgh12345678.apps.googleusercontent.com"
+    save_client(vault, ClientCredentials(client_id, "GOCSPX-test-secret"))
+    vault.set(GOOGLE_REFRESH_TOKEN, "1//refresh-token-value-0001")
+    save_grant(vault, Grant("me@example.com", gmail, calendar, frozenset()))
+
+
+def test_google_tools_are_off_until_connected(tmp_path: Path) -> None:
+    home, store = make_home(tmp_path)
+
+    runtime = open_runtime(home, store, provider=ScriptedProvider())
+    try:
+        assert not any(name.startswith(GOOGLE_TOOLS) for name in runtime.tools.names)
+        assert GOOGLE_OFF_NOTICE in runtime.notices
+        assert runtime.clients == ()
+    finally:
+        runtime.close()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("gmail", "calendar", "expected"),
+    [
+        ("read", "off", {"gmail_search", "gmail_read"}),
+        (
+            "draft",
+            "read",
+            {"gmail_search", "gmail_read", "gmail_draft", "calendar_list_events"},
+        ),
+        ("off", "write", {name for name in ALL_GOOGLE if name.startswith("calendar_")}),
+        ("send", "write", ALL_GOOGLE),
+    ],
+)
+async def test_google_tools_match_the_granted_access(
+    tmp_path: Path, gmail: GmailLevel, calendar: CalendarLevel, expected: set[str]
+) -> None:
+    home, store = make_home(tmp_path)
+    connect_google(store, gmail, calendar)
+
+    runtime = open_runtime(home, store, provider=ScriptedProvider())
+    try:
+        google = {name for name in runtime.tools.names if name.startswith(GOOGLE_TOOLS)}
+        assert google == expected
+        assert GOOGLE_OFF_NOTICE not in runtime.notices
+        assert len(runtime.clients) == 1
+        await runtime.aclose()
+        assert runtime.clients[0].is_closed
+    finally:
+        runtime.close()
+
+
+def test_a_corrupt_google_record_turns_google_off(tmp_path: Path) -> None:
+    home, store = make_home(tmp_path)
+    connect_google(store, "send", "write")
+    store.set(GOOGLE_GRANT, "not json")
+
+    runtime = open_runtime(home, store, provider=ScriptedProvider())
+    try:
+        assert not any(name.startswith(GOOGLE_TOOLS) for name in runtime.tools.names)
+        assert any("corrupt" in notice for notice in runtime.notices)
+    finally:
+        runtime.close()
+
+
+def test_google_is_set_up_only_after_everything_else_succeeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import bastion.runtime as runtime_module
+    from bastion.security.policy import PolicyError
+
+    home, store = make_home(tmp_path)
+    connect_google(store, "send", "write")
+    (home / POLICY_FILE).write_text("not [valid toml", encoding="utf-8")
+    calls: list[object] = []
+    monkeypatch.setattr(runtime_module, "build_google_tools", lambda *args: calls.append(args))
+
+    with pytest.raises(PolicyError):
+        open_runtime(home, store, provider=ScriptedProvider())
+
+    assert calls == []  # so no HTTP client was created only to leak

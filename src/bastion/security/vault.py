@@ -30,6 +30,12 @@ TELEGRAM_TOKEN = "telegram.bot_token"  # noqa: S105  # nosec B105: an entry name
 # rewriting it must need more than write access to a file.
 TELEGRAM_OWNER = "telegram.owner"
 TOTP_SECRET = "auth.totp_secret"  # noqa: S105  # nosec B105: an entry name, not a value
+# The owner's own Google OAuth client ("Desktop app"), the long-lived refresh token, and a record
+# of the account and access levels it grants (kept beside the token it describes).
+GOOGLE_CLIENT_ID = "google.client_id"
+GOOGLE_CLIENT_SECRET = "google.client_secret"  # noqa: S105  # nosec B105: an entry name
+GOOGLE_REFRESH_TOKEN = "google.refresh_token"  # noqa: S105  # nosec B105: an entry name
+GOOGLE_GRANT = "google.grant"
 
 _NAME = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*(?:\.[a-z0-9]+(?:_[a-z0-9]+)*)+$")
 _INSECURE_BACKENDS = ("keyring.backends.fail", "keyring.backends.null", "keyrings.alt")

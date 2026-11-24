@@ -5,9 +5,10 @@ from typing import Annotated
 import typer
 
 from bastion import __version__
-from bastion.cli import admin, chat, daemon, setup, telegram
+from bastion.cli import admin, chat, daemon, google, setup, telegram
 
 app = typer.Typer(
+    pretty_exceptions_show_locals=False,  # tracebacks must never print secrets
     name="bastion",
     help="A secure, always-on personal AI agent.",
     no_args_is_help=True,
@@ -41,6 +42,7 @@ app.command("chat")(chat.chat)
 app.command("daemon")(daemon.daemon)
 app.command("resume")(daemon.resume)
 app.add_typer(telegram.telegram_app, name="telegram")
+app.add_typer(google.google_app, name="google")
 app.add_typer(admin.audit_app, name="audit")
 app.add_typer(admin.secrets_app, name="secrets")
 app.add_typer(admin.policy_app, name="policy")
