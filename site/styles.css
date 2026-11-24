@@ -43,11 +43,14 @@
   --hatch: rgba(36, 51, 201, .065);
   --card-hi: var(--pale);
   --tint: rgba(36, 51, 201, .05);
+  --lead-bg: var(--blue);
   color-scheme: light;
 }
+:root[data-tone="light"] { --lead-bg: var(--pale); }
 
-/* Each band sets its tone; everything inside reads these tokens. */
-.tone-blue {
+/* Each band sets its tone; everything inside reads these tokens. The hero's tone is the
+   "lead" and the other is the "alt". The tone button (data-tone="light") swaps them. */
+.tone-lead, :root[data-tone="light"] .tone-alt {
   --bg: var(--blue);
   --fg: var(--pale);
   --soft: rgba(236, 239, 253, .78);
@@ -59,7 +62,7 @@
   --card-hi: var(--white);
   --tint: rgba(236, 239, 253, .08);
 }
-.tone-pale {
+.tone-alt, :root[data-tone="light"] .tone-lead {
   --bg: var(--pale);
   --fg: var(--blue);
   --soft: rgba(36, 51, 201, .78);
@@ -83,7 +86,7 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; }
-html { scroll-behavior: smooth; scroll-padding-top: 72px; -webkit-text-size-adjust: 100%; background: var(--pale); }
+html { scroll-behavior: smooth; scroll-padding-top: 72px; -webkit-text-size-adjust: 100%; background: var(--lead-bg); }
 body { margin: 0; background: var(--pale); color: var(--fg); font: 400 17px/1.6 var(--body); text-rendering: optimizeLegibility; }
 img, svg { max-width: 100%; }
 a { color: inherit; text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
@@ -138,7 +141,7 @@ p { margin: 0; }
 
 /* ------------------------------------------------------------------ nav */
 body::before {
-  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 30; background: var(--pale);
+  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 30; background: var(--lead-bg);
 }
 .nav {
   position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
@@ -164,6 +167,17 @@ body::before {
 }
 .nav nav a:hover, .nav nav a.active { color: var(--fg); }
 .nav nav a:hover::after, .nav nav a.active::after { transform: scaleX(1); }
+.tone-btn {
+  flex: none; width: 42px; height: 42px; display: grid; place-items: center; padding: 0; margin-right: -12px;
+  background: transparent; color: var(--fg); border: 2px solid var(--fg); cursor: pointer;
+  transition: background .2s, color .2s;
+}
+.tone-btn[hidden] { display: none; }
+.tone-btn:hover { background: var(--fg); color: var(--bg); }
+.tone-btn svg { width: 20px; height: 20px; transition: transform .6s var(--ease); }
+:root[data-tone="light"] .tone-btn svg { transform: rotate(180deg); }
+/* the swap wipes outward from the button (main.js); no cross-fade underneath it */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
 
 /* ------------------------------------------------------------------ hero */
 .hero { padding-block: clamp(48px, 7vw, 96px) clamp(56px, 7vw, 88px); }
@@ -478,7 +492,8 @@ body::before {
 /* ------------------------------------------------------------------ responsive */
 @media (max-width: 1020px) {
   .nav nav { display: none; }
-  .nav .btn { margin-left: auto; }
+  .nav .btn, .nav .tone-btn:not([hidden]) { margin-left: auto; }
+  .nav .tone-btn:not([hidden]) + .btn { margin-left: 0; }
   .hero-grid { grid-template-columns: minmax(0, 1fr); }
   .demo { max-width: 560px; }
   .steps { grid-template-columns: minmax(0, 1fr); max-width: 640px; }
