@@ -129,6 +129,24 @@ def test_every_band_uses_a_tone_the_colour_swap_defines(html: str) -> None:
     assert '.tone-alt, :root[data-tone="light"] .tone-lead {' in css
 
 
+def test_the_page_opens_pale_whatever_the_system_setting(html: str) -> None:
+    script = (SITE / "tone.js").read_text(encoding="utf-8")
+
+    assert '<html lang="en" data-tone="light">' in html
+    assert "prefers-color-scheme" not in script
+
+
+def test_the_link_preview_image_is_published_at_its_full_size(html: str) -> None:
+    url = re.search(r'<meta property="og:image" content="([^"]+)">', html)
+    assert url is not None
+    assert url.group(1).startswith("https://")
+    image = (SITE / url.group(1).rsplit("/", 1)[1]).read_bytes()
+
+    assert image[:8] == b"\x89PNG\r\n\x1a\n"
+    assert (int.from_bytes(image[16:20], "big"), int.from_bytes(image[20:24], "big")) == (1200, 630)
+    assert len(image) < 300_000
+
+
 def test_nothing_inline_needs_a_weaker_content_security_policy(page: _Page) -> None:
     assert page.inline_scripts == 0
     assert page.inline_styles == 0

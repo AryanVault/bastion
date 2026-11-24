@@ -1,11 +1,8 @@
-// Runs before the page paints, so it never flashes the wrong colours. The visitor's saved
-// choice wins; otherwise their system setting picks: light gets the pale page, dark the blue one.
+// Runs before the page paints, so it never flashes the wrong colours. The page always opens
+// pale (data-tone="light" is in the HTML); only a choice the visitor made with the button changes it.
 (() => {
   "use strict";
-  let tone = null;
-  try { tone = window.localStorage.getItem("bastion-tone"); } catch { /* storage blocked */ }
-  if (tone !== "light" && tone !== "dark") {
-    tone = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  }
-  document.documentElement.dataset.tone = tone;
+  let saved = null;
+  try { saved = window.localStorage.getItem("bastion-tone"); } catch { /* storage blocked */ }
+  if (saved === "light" || saved === "dark") document.documentElement.dataset.tone = saved;
 })();
