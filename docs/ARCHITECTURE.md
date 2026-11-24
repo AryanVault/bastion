@@ -86,8 +86,12 @@ policy, one audit log and one set of controls.
 | `telegram/bot.py` | The daemon: owner check, commands, kill switch, rate limit, one request at a time |
 | `telegram/text.py` | Plain-text chunking and the approval prompt |
 | `text.py` | Invisible and control characters: strip (for the model and replies) or reveal (for approvals) |
-| `cli/*` | `bastion` commands, the terminal approver, `daemon`, `telegram`, `google`, `resume` |
-| `config.py`, `runtime.py` | Configuration and wiring |
+| `cli/*` | `bastion` commands, the terminal approver, `daemon`, `telegram`, `google`, `tasks`, `resume` |
+| `autonomy/schedule.py` | The schedule grammar (`daily 08:00`, `every 4h`, ...) and next-run times |
+| `autonomy/tasks.py` | Sealed task definitions, scheduling state, run history |
+| `autonomy/runner.py` | Claiming due runs, budgets, failure pausing, run reports |
+| `tools/tasks.py` | `task_schedule` (always asks, needs the code, clean conversations only), `task_list`, `task_remove` |
+| `config.py`, `runtime.py` | Configuration and wiring (`Runtime.task_agent` builds a task's restricted agent) |
 
 ## Security controls in the code
 
@@ -107,8 +111,9 @@ policy, one audit log and one set of controls.
 | C9 least-privilege OAuth | `google/grant.py`, `runtime.py::build_google_tools`, `cli/google.py`, `google/oauth.py::LoopbackReceiver` | `test_grant.py`, `test_runtime.py`, `test_google_commands.py`, `test_oauth.py` |
 | C10 audit log | `security/audit.py`, `storage/db.py`, `security/vault.py::VaultAnchor` (checkpoint), `telegram/bot.py::_checkpoint` (off-machine copy) | `test_audit.py`, `test_commands.py`, `test_telegram_commands.py` |
 | C11 budgets, rate limit, kill switch | `core/agent.py::AgentLimits`, `security/ratelimit.py`, `security/killswitch.py` | `test_agent.py`, `test_killswitch_ratelimit.py`, `test_bot.py` |
+| C11 scheduled tasks: grants, task mode, budgets | `autonomy/`, `security/policy.py::PolicyEngine.for_task`, `runtime.py::Runtime.task_agent`, `tools/tasks.py` (`always_ask`, `clean_only`), `telegram/bot.py::check_schedule` | `tests/unit/autonomy/`, `test_policy.py`, `tools/test_tasks.py`, `test_runtime.py`, `test_bot.py`, `test_task_commands.py` |
 | C12 memory provenance | `tools/memory.py`, `storage/memory_bank.py`; calendar origin marker in `tools/calendar.py` | `tests/unit/tools/test_memory.py`, `tools/test_calendar.py` |
-| C13 encryption at rest | `security/crypto.py`, `storage/memory_bank.py` | `test_crypto.py`, `test_memory.py` |
+| C13 encryption at rest | `security/crypto.py`, `storage/memory_bank.py`, `autonomy/tasks.py` | `test_crypto.py`, `test_memory.py`, `autonomy/test_tasks.py` |
 | C14 supply chain | `uv.lock`, `.github/workflows/` | CI |
 | C16 display safety | `text.py`, `core/agent.py::_accept`, `cli/approver.py`, `cli/chat.py`, `telegram/text.py`, `telegram/api.py` (no markup, no link previews), `google/mail.py` (bare ASCII addresses) | `test_text.py`, `test_approver.py`, `test_agent.py`, `telegram/test_text.py`, `telegram/test_api.py`, `test_mail.py` |
 
@@ -120,7 +125,7 @@ Tests that simulate an attack are marked `@pytest.mark.security` (`uv run pytest
 |---|---|
 | `~/.bastion/config.toml` | Provider, model, budgets. No secrets. |
 | `~/.bastion/policy.toml` | The owner's policy (cannot weaken the code-enforced floors) |
-| `~/.bastion/bastion.db` | SQLite: `audit_log` (HMAC chain, append-only triggers), `memories` (AES-GCM) |
+| `~/.bastion/bastion.db` | SQLite: `audit_log` (HMAC chain, append-only triggers), `memories` (AES-GCM), `tasks` (definitions sealed with AES-GCM; next run, paused and failure count in clear), `task_runs` (outcome, tokens, tool calls) |
 | `~/.bastion/STOPPED` | Present while the kill switch is engaged (`/stop`); removed by `bastion resume` |
 | OS keyring, service `bastion` | LLM and search API keys, `audit.hmac_key`, `storage.encryption_key`, `audit.chain_head`, `telegram.bot_token`, `telegram.owner`, `auth.totp_secret`, `google.client_id`, `google.client_secret`, `google.refresh_token`, `google.grant` (account and access levels) |
 | Google Calendar | Events Bastion wrote from untrusted content carry `extendedProperties.private.bastion_origin = untrusted` |
@@ -150,8 +155,17 @@ Tests that simulate an attack are marked `@pytest.mark.security` (`uv run pytest
   receiving approval taps, codes and `/stop`; a second request waits ("still working") rather
   than interleaving with the first.
 - **Approvals live in the daemon.** Telegram approvals are resolved in memory by the process
-  that asked; restarting abandons them (fail closed). Cross-channel approvals can come with
-  scheduled tasks (Phase 4) if they need it.
+  that asked; restarting abandons them (fail closed). Scheduled tasks did not need more: they
+  run inside the daemon and use the same approver.
+- **Tasks share the one request slot.** A due task starts only when the bot is idle and not
+  stopped, so `/cancel`, `/stop` and the approval buttons cover it with no new machinery; the
+  owner's messages wait ("running the scheduled task ...") until it finishes.
+- **No scheduler dependency.** A fixed schedule grammar and a 30-second check in the daemon
+  replace a cron library: every schedule is readable in an approval prompt, none can run more
+  than hourly, and missed runs are skipped instead of replayed.
+- **The model can propose a task, never grant one silently.** `task_schedule` always asks and
+  always needs the authenticator code (`Tool.always_ask`, `Tool.step_up`), and is refused in a
+  tainted conversation (`Tool.clean_only`); these are floors a policy file cannot lower.
 - **Thin Google clients.** About ten Gmail and Calendar REST calls over the existing `httpx2`
   stack, instead of `google-api-python-client` and `google-auth` with their dozens of transitive
   packages. Phase 3 added no dependencies.

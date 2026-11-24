@@ -188,3 +188,60 @@ def test_google_is_set_up_only_after_everything_else_succeeded(
         open_runtime(home, store, provider=ScriptedProvider())
 
     assert calls == []  # so no HTTP client was created only to leak
+
+
+def task_for(runtime: object, tools: list[str]) -> object:
+    from bastion.runtime import Runtime
+
+    assert isinstance(runtime, Runtime)
+    spec = runtime.tasks.new_spec(
+        name="Brief",
+        schedule="daily 08:00",
+        instructions="Look something up.",
+        tools=tools,
+        grantable=runtime.tools.names,
+        created_via="cli",
+    )
+    return runtime.tasks.add(spec, limit=20)
+
+
+@pytest.mark.security
+async def test_a_task_agent_sees_only_its_granted_tools(tmp_path: Path) -> None:
+    from bastion.autonomy.tasks import Task
+    from bastion.core.prompts import task_system_prompt
+
+    home, store = make_home(tmp_path)
+    provider = ScriptedProvider(reply("done"))
+    runtime = open_runtime(home, store, provider=provider)
+    try:
+        assert {"task_schedule", "task_list", "task_remove"} <= runtime.tools.names
+        task = task_for(runtime, ["web_fetch", "memory_search"])
+        assert isinstance(task, Task)
+
+        built = runtime.task_agent(task, StubApprover(False))
+        result = await built.agent.run_turn(Conversation.new(), task.spec.instructions)
+
+        assert built.tools == ("memory_search", "web_fetch") and built.missing == ()
+        assert provider.tool_names == [("memory_search", "web_fetch")]
+        assert result.reply == "done"
+        assert task_system_prompt("Brief").endswith("remove tasks.\n")
+    finally:
+        await runtime.aclose()
+        runtime.close()
+
+
+def test_task_tools_are_off_when_autonomy_is_disabled(tmp_path: Path) -> None:
+    from bastion.config import AutonomySettings
+
+    home, store = make_home(tmp_path)
+    settings = Settings(
+        llm=LLMSettings(provider="ollama", model="llama3", effort=None),
+        autonomy=AutonomySettings(enabled=False),
+    )
+    (home / CONFIG_FILE).write_text(render_config(settings), encoding="utf-8")
+
+    runtime = open_runtime(home, store, provider=ScriptedProvider())
+    try:
+        assert not {"task_schedule", "task_list", "task_remove"} & runtime.tools.names
+    finally:
+        runtime.close()

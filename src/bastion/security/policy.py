@@ -7,6 +7,10 @@ policy file or per-tool override:
 
 * destructive actions always need approval (or are denied);
 * send actions need approval whenever the conversation contains untrusted content.
+
+Tools can demand more (``Tool.always_ask``, ``Tool.clean_only``, ``Tool.step_up``). A
+scheduled task runs with ``for_task``: only its granted tools are known, every send action
+needs approval, and destructive actions are refused once its run reads untrusted content.
 """
 
 import tomllib
@@ -38,6 +42,14 @@ _FLOORS: dict[tuple[RiskTier, bool], Verdict] = {
     (RiskTier.DESTRUCTIVE, False): Verdict.ASK,
     (RiskTier.DESTRUCTIVE, True): Verdict.ASK,
     (RiskTier.SEND, True): Verdict.ASK,
+}
+
+
+# Extra floors while a scheduled task runs: the owner did not ask for this particular run.
+_TASK_FLOORS: dict[tuple[RiskTier, bool], Verdict] = {
+    (RiskTier.SEND, False): Verdict.ASK,
+    (RiskTier.SEND, True): Verdict.ASK,
+    (RiskTier.DESTRUCTIVE, True): Verdict.DENY,
 }
 
 
@@ -155,21 +167,45 @@ def default_policy() -> PolicyConfig:
 
 
 class PolicyEngine:
-    def __init__(self, config: PolicyConfig, known_tools: frozenset[str]) -> None:
+    def __init__(
+        self, config: PolicyConfig, known_tools: frozenset[str], *, task: str | None = None
+    ) -> None:
         self._config = config
         self._known_tools = known_tools
+        self._task = task
 
     @property
     def config(self) -> PolicyConfig:
         return self._config
 
+    def for_task(self, name: str, tools: frozenset[str]) -> "PolicyEngine":
+        """The policy for one run of the scheduled task ``name``, granted ``tools``."""
+        return PolicyEngine(self._config, self._known_tools & tools, task=name)
+
     def decide(
-        self, tool: str, tier: RiskTier, taint: TaintState, *, always_step_up: bool = False
+        self,
+        tool: str,
+        tier: RiskTier,
+        taint: TaintState,
+        *,
+        always_step_up: bool = False,
+        always_ask: bool = False,
+        clean_only: bool = False,
     ) -> Decision:
-        """``always_step_up``: the tool demands a one-time code whenever the owner is asked."""
+        """The tool's demands: ``always_step_up`` (a one-time code whenever the owner is
+        asked), ``always_ask`` (approval every time), ``clean_only`` (refused once the
+        conversation contains untrusted content)."""
         if tool not in self._known_tools:
-            return Decision(Verdict.DENY, f"unknown tool '{tool}' (default deny)")
+            return Decision(Verdict.DENY, self._label(f"unknown tool '{tool}' (default deny)"))
         tainted = taint.tainted
+        if clean_only and tainted:
+            return Decision(
+                Verdict.DENY,
+                self._label(
+                    f"{tool} is refused once the conversation contains untrusted content "
+                    f"(from: {taint.describe()}); the owner must start a new conversation"
+                ),
+            )
         verdict = (self._config.tainted if tainted else self._config.clean).for_tier(tier)
         override = self._config.tools.get(tool)
         if override is not None:
@@ -178,8 +214,18 @@ class PolicyEngine:
         floor = _FLOORS.get((tier, tainted))
         if floor is not None:
             verdict = _at_least(verdict, floor)
+        if always_ask:
+            verdict = _at_least(verdict, Verdict.ASK)
+        task_floor = _TASK_FLOORS.get((tier, tainted)) if self._task is not None else None
+        if task_floor is not None:
+            verdict = _at_least(verdict, task_floor)
         step_up = verdict is Verdict.ASK and (always_step_up or tier in self._config.step_up.tiers)
-        return Decision(verdict, self._reason(tier, taint, verdict), step_up)
+        return Decision(verdict, self._label(self._reason(tier, taint, verdict)), step_up)
+
+    def _label(self, reason: str) -> str:
+        if self._task is None:
+            return reason
+        return f"scheduled task '{self._task}' (runs on its own): {reason}"
 
     @staticmethod
     def _reason(tier: RiskTier, taint: TaintState, verdict: Verdict) -> str:

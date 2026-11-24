@@ -282,7 +282,12 @@ class Agent:
             )
         tier = tool.risk_for(args)
         decision = self._policy.decide(
-            tool.name, tier, turn.conversation.taint, always_step_up=tool.step_up
+            tool.name,
+            tier,
+            turn.conversation.taint,
+            always_step_up=tool.step_up,
+            always_ask=tool.always_ask,
+            clean_only=tool.clean_only,
         )
         self._audit.append(
             "policy.decision",

