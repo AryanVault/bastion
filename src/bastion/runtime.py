@@ -5,6 +5,7 @@ share one policy, one audit log and one set of security controls.
 """
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,13 +14,20 @@ import httpx2
 
 from bastion.autonomy.runner import TaskAgent, TaskRunner
 from bastion.autonomy.tasks import Task, TaskStore
-from bastion.config import DATABASE_FILE, POLICY_FILE, ConfigError, Settings, load_settings
+from bastion.config import (
+    DATABASE_FILE,
+    POLICY_FILE,
+    AutonomySettings,
+    ConfigError,
+    Settings,
+    load_settings,
+)
 from bastion.core.agent import Agent, AgentLimits, Approver
 from bastion.core.prompts import task_system_prompt
 from bastion.google.api import GoogleApi, google_client
 from bastion.google.calendar import CalendarClient
 from bastion.google.gmail import GmailClient
-from bastion.google.grant import load_client, load_grant
+from bastion.google.grant import CalendarLevel, GmailLevel, load_client, load_grant
 from bastion.google.oauth import GoogleAuth
 from bastion.llm.factory import build_provider
 from bastion.llm.quarantine import QuarantinedReader
@@ -168,25 +176,50 @@ def build_google_tools(
     auth = GoogleAuth(
         client, credentials, refresh_token, redactor=redactor, still_connected=still_connected
     )
-    api = GoogleApi(auth, client)
+    tools = google_tool_set(
+        GoogleApi(auth, client), grant.gmail, grant.calendar, QuarantinedReader(provider, audit)
+    )
+    return GoogleTools(tools, (), client)
+
+
+def google_tool_set(
+    api: GoogleApi, gmail: GmailLevel, calendar: CalendarLevel, reader: QuarantinedReader
+) -> tuple[Tool[Any], ...]:
+    """The Gmail and Calendar tools for the given access levels."""
     tools: list[Tool[Any]] = []
-    if grant.gmail != "off":
-        gmail = GmailClient(api)
-        tools += [GmailSearchTool(gmail), GmailReadTool(gmail, QuarantinedReader(provider, audit))]
-        if grant.gmail in ("draft", "send"):
-            tools.append(GmailDraftTool(gmail))
-        if grant.gmail == "send":
-            tools.append(GmailSendTool(gmail))
-    if grant.calendar != "off":
-        calendar = CalendarClient(api)
-        tools.append(CalendarListTool(calendar))
-        if grant.calendar == "write":
+    if gmail != "off":
+        mail = GmailClient(api)
+        tools += [GmailSearchTool(mail), GmailReadTool(mail, reader)]
+        if gmail in ("draft", "send"):
+            tools.append(GmailDraftTool(mail))
+        if gmail == "send":
+            tools.append(GmailSendTool(mail))
+    if calendar != "off":
+        events = CalendarClient(api)
+        tools.append(CalendarListTool(events))
+        if calendar == "write":
             tools += [
-                CalendarCreateTool(calendar),
-                CalendarUpdateTool(calendar),
-                CalendarDeleteTool(calendar),
+                CalendarCreateTool(events),
+                CalendarUpdateTool(events),
+                CalendarDeleteTool(events),
             ]
-    return GoogleTools(tuple(tools), (), client)
+    return tuple(tools)
+
+
+def with_task_tools(
+    available: Sequence[Tool[Any]], tasks: TaskStore, autonomy: AutonomySettings
+) -> ToolRegistry:
+    """The full tool registry: ``available`` plus the task tools when autonomy is on. Tasks
+    can be granted any of ``available``, never the task tools themselves."""
+    tools = list(available)
+    if autonomy.enabled:
+        grantable = frozenset(tool.name for tool in tools)
+        tools += [
+            TaskScheduleTool(tasks, grantable, max_tasks=autonomy.max_tasks),
+            TaskListTool(tasks),
+            TaskRemoveTool(tasks),
+        ]
+    return ToolRegistry(tools)
 
 
 def core_tools(
@@ -233,15 +266,7 @@ def open_runtime(home: Path, store: SecretStore, *, provider: LLMProvider | None
     except BaseException:
         conn.close()
         raise
-    available: list[Tool[Any]] = [*base, *google.tools]
-    if settings.autonomy.enabled:
-        grantable = frozenset(tool.name for tool in available)
-        available += [
-            TaskScheduleTool(tasks, grantable, max_tasks=settings.autonomy.max_tasks),
-            TaskListTool(tasks),
-            TaskRemoveTool(tasks),
-        ]
-    tools = ToolRegistry(available)
+    tools = with_task_tools([*base, *google.tools], tasks, settings.autonomy)
     policy = PolicyEngine(policy_config, tools.names)
     clients = (google.client,) if google.client is not None else ()
     return Runtime(

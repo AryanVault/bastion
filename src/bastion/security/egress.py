@@ -249,15 +249,19 @@ class _GuardedTransport(httpx2.AsyncHTTPTransport):
 
 
 def guarded_client(
-    *, resolver: Resolver = system_resolver, timeout: float = 15.0
+    *,
+    resolver: Resolver = system_resolver,
+    timeout: float = 15.0,
+    network: httpcore2.AsyncNetworkBackend | None = None,
 ) -> httpx2.AsyncClient:
     """HTTP client for fetching untrusted URLs.
 
     Ignores proxy environment variables (a proxy would bypass the IP check) and never follows
-    redirects on its own: callers must re-validate each hop with ``normalize_url``.
+    redirects on its own: callers must re-validate each hop with ``normalize_url``. ``network``
+    replaces the real network below the address checks (the red-team sandbox uses this).
     """
     return httpx2.AsyncClient(
-        transport=_GuardedTransport(GuardedBackend(resolver=resolver)),
+        transport=_GuardedTransport(GuardedBackend(resolver=resolver, inner=network)),
         trust_env=False,
         follow_redirects=False,
         timeout=timeout,

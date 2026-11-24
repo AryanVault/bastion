@@ -94,6 +94,13 @@ TASKS_FOOTER = "Pause or remove a task on your computer: bastion tasks pause|rem
 MAX_REJECTIONS_AUDITED = 20  # distinct senders per window
 
 
+def forwarded_request(conversation: Conversation, text: str) -> tuple[Conversation, str]:
+    """A forwarded message is someone else's text: it taints the conversation and reaches the
+    model fenced, with hidden characters removed (its links are never made fetchable)."""
+    fenced = fence_untrusted(strip_invisible(text), FORWARDED_SOURCE)
+    return conversation.tainted_by(FORWARDED_SOURCE), FORWARD_PREAMBLE + fenced
+
+
 class ConfigurationChanged(Exception):
     """The paired owner or the authenticator changed on the computer: the bot must restart."""
 
@@ -369,8 +376,7 @@ class TelegramBot:
         self._task_name = None
         prompt = text
         if forwarded:
-            conversation = conversation.tainted_by(FORWARDED_SOURCE)
-            prompt = FORWARD_PREAMBLE + fence_untrusted(strip_invisible(text), FORWARDED_SOURCE)
+            conversation, prompt = forwarded_request(conversation, text)
         self._turn = asyncio.create_task(
             self._run_turn(conversation, prompt, was_tainted=was_tainted, from_owner=not forwarded)
         )

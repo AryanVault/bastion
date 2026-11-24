@@ -2,11 +2,13 @@
 
 The model can only *propose* a tool call. This engine decides, from the tool's risk tier, the
 conversation's taint state and the owner's policy file, whether the call runs, needs the
-owner's approval, or is refused. Two floors are enforced in code and cannot be weakened by any
-policy file or per-tool override:
+owner's approval, or is refused. These floors are enforced in code and cannot be weakened by
+any policy file or per-tool override:
 
 * destructive actions always need approval (or are denied);
-* send actions need approval whenever the conversation contains untrusted content.
+* send actions need approval whenever the conversation contains untrusted content;
+* approving a send or destructive action always needs the one-time code (step-up), so a
+  hijacked chat account alone can neither act in the owner's name nor destroy anything.
 
 Tools can demand more (``Tool.always_ask``, ``Tool.clean_only``, ``Tool.step_up``). A
 scheduled task runs with ``for_task``: only its granted tools are known, every send action
@@ -53,6 +55,11 @@ _TASK_FLOORS: dict[tuple[RiskTier, bool], Verdict] = {
 }
 
 
+# Approving these always needs the one-time code: they act in the owner's name towards other
+# people (an email, an invitation) or cannot be undone.
+_STEP_UP_FLOOR = frozenset({RiskTier.SEND, RiskTier.DESTRUCTIVE})
+
+
 def _at_least(verdict: Verdict, floor: Verdict) -> Verdict:
     return verdict if _STRICTNESS[verdict] >= _STRICTNESS[floor] else floor
 
@@ -83,7 +90,8 @@ class ToolRule(_Strict):
 
 
 class StepUpRules(_Strict):
-    tiers: frozenset[RiskTier] = frozenset({RiskTier.DESTRUCTIVE})
+    # Send and destructive are always included (a floor in code); list others to add them.
+    tiers: frozenset[RiskTier] = _STEP_UP_FLOOR
 
 
 class PolicyConfig(_Strict):
@@ -118,6 +126,7 @@ DEFAULT_POLICY_TOML = """\
 # Floors enforced in code, which this file cannot weaken:
 #   - destructive actions always need approval (or are denied)
 #   - send actions always need approval once the conversation contains untrusted content
+#   - approving a send or destructive action always needs your authenticator code
 
 # The conversation contains only your own messages and trusted data.
 [clean]
@@ -133,9 +142,10 @@ write = "ask"
 send = "ask"
 destructive = "deny"
 
-# Tiers whose approvals also require a one-time code (TOTP).
+# Tiers whose approvals also require a one-time code (TOTP). "send" and "destructive" always
+# do; add "write" here to require it for every approved change.
 [step_up]
-tiers = ["destructive"]
+tiers = ["send", "destructive"]
 
 # Per-tool overrides can tighten anything, but cannot go below the floors above.
 [tools.memory_save]
@@ -219,7 +229,9 @@ class PolicyEngine:
         task_floor = _TASK_FLOORS.get((tier, tainted)) if self._task is not None else None
         if task_floor is not None:
             verdict = _at_least(verdict, task_floor)
-        step_up = verdict is Verdict.ASK and (always_step_up or tier in self._config.step_up.tiers)
+        step_up = verdict is Verdict.ASK and (
+            always_step_up or tier in _STEP_UP_FLOOR or tier in self._config.step_up.tiers
+        )
         return Decision(verdict, self._label(self._reason(tier, taint, verdict)), step_up)
 
     def _label(self, reason: str) -> str:

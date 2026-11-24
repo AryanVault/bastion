@@ -79,7 +79,7 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T4 | Injected text makes the agent delete mail or calendar events | Tampering | A1 | `destructive` tier: refused in a tainted conversation, otherwise approval plus TOTP step-up (C1, C4, C5); a deletion names the event, which code checks against the live event (C4); Bastion offers no way to delete email |
 | T5 | Owner approves "send to alice@" but the agent sends to someone else | Tampering | A1 | Approval bound to a hash of the exact tool arguments; single use; expiring (C4) |
 | T6 | Stranger commands the bot | Spoofing / EoP | A2 | Pairing needs a one-time code from the terminal *and* the owner's confirmation there, with a guess limit per sender; the owner (user and private chat) is kept in the OS keyring; every other user, group or chat is dropped without a reply and audited with a rate limit (C6) |
-| T7 | Hijacked Telegram approves high-risk actions | Spoofing | A3 | TOTP step-up for high-risk tiers and for sending email as the owner, each code usable once; five wrong codes in an hour engage the kill switch (C5); `/stop` kill switch that only the computer can release (`bastion resume`); `bastion telegram unpair` stops a running bot at its next update (C6, C11) |
+| T7 | Hijacked Telegram approves high-risk actions | Spoofing | A3 | TOTP step-up for every send action (email, invitations, notifying guests) and every destructive action, enforced in code whatever the policy file says, each code usable once; five wrong codes in an hour engage the kill switch (C5); `/stop` kill switch that only the computer can release (`bastion resume`); `bastion telegram unpair` stops a running bot at its next update (C6, C11) |
 | T8 | Injected instruction stored in memory and replayed in every future session | Tampering (persistence) | A1 | Memory provenance bound into the ciphertext; tainted memories come back as untrusted data; caps on untrusted memories; trusted memories always rank first (C12) |
 | T9 | Secrets leak into logs, audit entries, or model context | Info disclosure | A1, A5 | Keyring-only storage (C8); redaction filter on all log and audit output (C8); tools never return credentials |
 | T10 | Token theft from disk | Info disclosure | A5 | OS keyring (C8); AES-GCM field encryption for sensitive DB fields (C13) |
@@ -130,7 +130,7 @@ Where each control lives in the code: [ARCHITECTURE.md](ARCHITECTURE.md#security
   inbox", the summary contains private data. The goal is that data only flows to the owner.
 - **Approval fatigue.** If the owner approves everything without reading, approvals don't help.
   Bastion mitigates this by keeping approvals rare (read actions never prompt), showing exact
-  diffs, and requiring TOTP only for the highest tier.
+  diffs, and requiring TOTP only for actions that reach other people or cannot be undone.
 - **URL-selection side channel.** A page or search result can list many links. A hijacked model
   cannot *construct* a URL, but by choosing *which* listed URL to fetch it could leak a few bits.
   Per-request tool-call budgets bound this; it is not eliminated. For the same reason, links found
@@ -210,6 +210,13 @@ Where each control lives in the code: [ARCHITECTURE.md](ARCHITECTURE.md#security
 
 ## 10. How this document is kept honest
 
-Every control above has tests in `tests/security/` that try to break it. The red-team eval suite
-(Phase 5) runs a corpus of injection attacks end to end and publishes the attack-success rate in
-the README. A control without a failing-then-passing attack test is not considered implemented.
+Every control above has tests marked `@pytest.mark.security` that try to break it. The red-team
+suite (C15: `bastion redteam`, `src/bastion/redteam/`) runs 24 attack scenarios end to end
+against the real agent, policy, approvals and tools, with a model that obeys every injected
+instruction; its results are in the README, and CI fails if any attack succeeds. Its mutation
+tests switch each control off in turn and check that the attack aimed at it then succeeds, so
+the suite is known to measure the controls rather than the sandbox. It found one gap while it
+was built: a hijacked chat account (A3) could send calendar invitations, which email other
+people in the owner's name, with a tap; every send action now needs the authenticator code.
+The corpus is finite: passing it shows these attacks fail, not that every attack will.
+A control without a failing-then-passing attack test is not considered implemented.

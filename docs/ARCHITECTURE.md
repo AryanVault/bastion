@@ -86,11 +86,12 @@ policy, one audit log and one set of controls.
 | `telegram/bot.py` | The daemon: owner check, commands, kill switch, rate limit, one request at a time |
 | `telegram/text.py` | Plain-text chunking and the approval prompt |
 | `text.py` | Invisible and control characters: strip (for the model and replies) or reveal (for approvals) |
-| `cli/*` | `bastion` commands, the terminal approver, `daemon`, `telegram`, `google`, `tasks`, `resume` |
+| `cli/*` | `bastion` commands, the terminal approver, `daemon`, `telegram`, `google`, `tasks`, `resume`, `redteam` |
 | `autonomy/schedule.py` | The schedule grammar (`daily 08:00`, `every 4h`, ...) and next-run times |
 | `autonomy/tasks.py` | Sealed task definitions, scheduling state, run history |
 | `autonomy/runner.py` | Claiming due runs, budgets, failure pausing, run reports |
 | `tools/tasks.py` | `task_schedule` (always asks, needs the code, clean conversations only), `task_list`, `task_remove` |
+| `redteam/` | The attack corpus, the sandbox world (fake Gmail, Calendar and web, served below the real egress guard) and the harness behind `bastion redteam` |
 | `config.py`, `runtime.py` | Configuration and wiring (`Runtime.task_agent` builds a task's restricted agent) |
 
 ## Security controls in the code
@@ -104,7 +105,7 @@ policy, one audit log and one set of controls.
 | C3 quarantined reader | `llm/quarantine.py`, `tools/gmail.py::GmailReadTool` | `test_quarantine.py`, `test_gmail.py` |
 | C4 argument-bound approvals | `security/approvals.py`, `cli/approver.py`, `telegram/approver.py` | `test_approvals.py`, `test_approver.py` (CLI and Telegram) |
 | C4 approvals that name their target | `tools/calendar.py::_check_identity`, `google/calendar.py` (`If-Match`) | `tools/test_calendar.py`, `test_clients.py` |
-| C5 TOTP step-up | `security/totp.py`, `telegram/approver.py`, `security/policy.py` (`always_step_up`), `tools/gmail.py::GmailSendTool.step_up` | `test_totp.py`, `telegram/test_approver.py`, `test_bot.py` |
+| C5 TOTP step-up | `security/totp.py`, `telegram/approver.py`, `security/policy.py` (`_STEP_UP_FLOOR`, `always_step_up`), `tools/gmail.py::GmailSendTool.step_up` | `test_totp.py`, `telegram/test_approver.py`, `test_bot.py` |
 | C6 Telegram lockdown | `telegram/pairing.py`, `telegram/bot.py::_on_message`, `telegram/api.py` | `test_pairing.py`, `test_bot.py`, `telegram/test_api.py` |
 | C7 egress guard | `security/egress.py`, `tools/web_fetch.py` | `test_egress.py`, `test_web_fetch.py` |
 | C8 vault and redaction | `security/vault.py`, `security/redact.py`, `llm/factory.py`, `google/oauth.py::GoogleAuth`, `google/api.py` | `test_vault.py`, `test_redact.py`, `test_factory.py`, `test_oauth.py`, `google/test_api.py` |
@@ -115,6 +116,7 @@ policy, one audit log and one set of controls.
 | C12 memory provenance | `tools/memory.py`, `storage/memory_bank.py`; calendar origin marker in `tools/calendar.py` | `tests/unit/tools/test_memory.py`, `tools/test_calendar.py` |
 | C13 encryption at rest | `security/crypto.py`, `storage/memory_bank.py`, `autonomy/tasks.py` | `test_crypto.py`, `test_memory.py`, `autonomy/test_tasks.py` |
 | C14 supply chain | `uv.lock`, `.github/workflows/` | CI |
+| C15 red-team suite | `redteam/`, `cli/redteam.py`; uses `runtime.py::google_tool_set`, `with_task_tools` so the sandbox is wired like production | `tests/unit/redteam/test_harness.py` (every scenario, plus mutation tests), `cli/test_redteam_command.py` |
 | C16 display safety | `text.py`, `core/agent.py::_accept`, `cli/approver.py`, `cli/chat.py`, `telegram/text.py`, `telegram/api.py` (no markup, no link previews), `google/mail.py` (bare ASCII addresses) | `test_text.py`, `test_approver.py`, `test_agent.py`, `telegram/test_text.py`, `telegram/test_api.py`, `test_mail.py` |
 
 Tests that simulate an attack are marked `@pytest.mark.security` (`uv run pytest -m security`).
@@ -180,6 +182,9 @@ Tests that simulate an attack are marked `@pytest.mark.security` (`uv run pytest
 - **Approvals name their target.** Changing or deleting an event takes its title and start, not
   just an id, so the approval prompt says what will happen; code verifies them against the
   live event, and the ETag guards the gap between that check and the write.
-- **Sending mail always needs the code.** Tools can demand step-up regardless of the policy's
-  step-up tiers (`Tool.step_up`); `gmail_send` does, because mail sent as the owner is the
-  costliest thing a hijacked chat account could do.
+- **Sending and deleting always need the code.** Approving any send action (an email, an
+  invitation, a change that notifies guests) or destructive action needs the authenticator
+  code: a floor in `security/policy.py` that the policy file cannot lower. Tools can demand it
+  for other tiers too (`Tool.step_up`, used by `task_schedule`). The red-team suite found the
+  case behind the floor: invitations email other people in the owner's name, so a hijacked
+  chat account could otherwise have sent them with a tap.
