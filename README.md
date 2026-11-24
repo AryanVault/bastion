@@ -1,16 +1,20 @@
 # Bastion
 
-**Your personal AI assistant on Telegram, with security that doesn't depend on the AI behaving.**
+**Your personal, open-source AI assistant. It runs on your computer, answers you on Telegram, and
+its security doesn't depend on the AI behaving.**
 
 [![CI](https://github.com/AryanVault/bastion/actions/workflows/ci.yml/badge.svg)](https://github.com/AryanVault/bastion/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)
 [![Red team: 0 of 24 attacks succeed](https://img.shields.io/badge/red%20team-0%20of%2024%20attacks%20succeed-brightgreen.svg)](docs/RED_TEAM.md)
 
-Bastion is an assistant you message from your phone (Telegram) or your terminal. It reads and
-drafts your email, manages your calendar, researches the web, remembers things for you, and runs
-jobs on a schedule, such as a briefing every morning. It works with the AI model of your choice,
-including fully local ones.
+**Open source** · **Runs on your computer** · **Personal: paired to you alone** · **Any AI model,
+local ones too**
+
+Bastion is a personal assistant you run yourself, on your own computer or home server, and
+message from your phone (Telegram) or your terminal. It reads and drafts your email, manages your
+calendar, researches the web, remembers things for you, and runs jobs on a schedule, such as a
+briefing every morning. There is no Bastion account and no Bastion server: it's yours.
 
 Giving an AI your inbox is risky: one malicious email or web page can try to talk it into
 forwarding your data or deleting things. Bastion is built on the assumption that this **will**
@@ -20,7 +24,8 @@ reaches other people or cannot be undone waits for your approval and your authen
 > **Status:** early release (0.1). Everything below works; expect rough edges, and please
 > [report problems](../../issues).
 
-**Contents:** [What it does](#what-it-does) · [Why you can trust it](#why-you-can-trust-it) ·
+**Contents:** [What it does](#what-it-does) · [Open source, local and personal](#open-source-local-and-personal) ·
+[Why you can trust it](#why-you-can-trust-it) ·
 [Get started](#get-started) · [Everyday use](#everyday-use) ·
 [Troubleshooting](#troubleshooting) · [How it works](#how-it-works) ·
 [Development](#development)
@@ -35,9 +40,21 @@ reaches other people or cannot be undone waits for your approval and your authen
 | **Memory** | "Remember that my passport expires in March" · "What do you know about my travel plans?" |
 | **Scheduled tasks** | "Every weekday at 8, brief me on my calendar and unread email" |
 
-It runs on your own computer or server, talks to you on Telegram (no app to install, no ports to
-open), and works with Claude, GPT, Gemini, OpenRouter's hundreds of models, Groq, Mistral, any
-OpenAI-compatible endpoint, or a fully local model through Ollama.
+## Open source, local and personal
+
+- **Open source.** Apache-2.0. Every line of code, the [threat model](docs/THREAT_MODEL.md) and
+  the [attack suite](docs/RED_TEAM.md) are in this repository, so you can check every claim here.
+- **Runs on your computer.** Windows, macOS, Linux, a home server or a Raspberry Pi. Your keys,
+  memories and scheduled tasks stay on your own disk, encrypted, next to a tamper-evident
+  audit log.
+- **Personal.** It pairs with exactly one Telegram account, yours, and ignores everyone else.
+  No app to install and no ports to open on your network.
+- **Any AI model.** Claude, GPT, Gemini, OpenRouter's hundreds of models, Groq, Mistral, any
+  OpenAI-compatible endpoint, or a model that runs on your own machine through Ollama.
+
+**What leaves your computer:** what you ask, and the emails and pages it reads for you, go to the
+AI provider you choose, and your Telegram messages pass through Telegram. With a local model
+(Ollama), the AI part stays on your machine too.
 
 ## Why you can trust it
 
@@ -107,7 +124,7 @@ skip the web-search key for now ([step 7](#7-turn-on-web-search)).
 | `openai` | OpenAI models |
 | `openrouter` | Hundreds of models; IDs look like `anthropic/claude-sonnet-5.5` (the default) |
 | `gemini`, `groq`, `mistral` | Through their OpenAI-compatible APIs |
-| `ollama` | Fully local; no API key, nothing leaves your machine |
+| `ollama` | The model runs on your own machine; no API key |
 | `custom` | Any OpenAI-compatible endpoint (HTTPS required) |
 
 ### 4. Say hello
@@ -311,6 +328,9 @@ uv export --frozen --no-emit-project --format requirements.txt -o requirements-a
 uv run pip-audit --strict --disable-pip --require-hashes -r requirements-audit.txt
 docker build -t bastion .            # the hardened image (CI also smoke-tests it)
 ```
+
+The landing page lives in [`site/`](site/): plain HTML, CSS and JavaScript with no build step
+and nothing loaded from other hosts. A test keeps its attack list in step with the suite.
 
 Contributions are welcome. For anything security-related, please read
 [SECURITY.md](SECURITY.md) first.
