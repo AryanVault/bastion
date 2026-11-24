@@ -230,7 +230,7 @@ Where each control lives in the code: [ARCHITECTURE.md](ARCHITECTURE.md#security
 Every control above has tests marked `@pytest.mark.security` that try to break it. The red-team
 suite (C15: `bastion redteam`, `src/bastion/redteam/`) runs 24 attack scenarios end to end
 against the real agent, policy, approvals and tools, with a model that obeys every injected
-instruction; its results are in the README, and CI fails if any attack succeeds. Its mutation
+instruction; its results are in docs/RED_TEAM.md, and CI fails if any attack succeeds. Its mutation
 tests switch each control off in turn and check that the attack aimed at it then succeeds, so
 the suite is known to measure the controls rather than the sandbox. It found one gap while it
 was built: a hijacked chat account (A3) could send calendar invitations, which email other
