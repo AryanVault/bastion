@@ -3,6 +3,8 @@
 **Your personal, open-source AI assistant. It runs on your computer, answers you on Telegram, and
 its security doesn't depend on the AI behaving.**
 
+**Website: [bastion-aryanvault.vercel.app](https://bastion-aryanvault.vercel.app/)**: see an attack get stopped, step by step.
+
 [![CI](https://github.com/AryanVault/bastion/actions/workflows/ci.yml/badge.svg)](https://github.com/AryanVault/bastion/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)
