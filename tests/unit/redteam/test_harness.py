@@ -266,12 +266,15 @@ async def test_the_recorder_leaves_the_shared_provider_open() -> None:
     assert not hasattr(inner, "closed")
 
 
-def test_the_readme_publishes_every_scenario() -> None:
-    readme = (Path(__file__).parents[3] / "README.md").read_text(encoding="utf-8")
+def test_the_published_results_list_every_scenario() -> None:
+    root = Path(__file__).parents[3]
+    results = (root / "docs" / "RED_TEAM.md").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
 
-    assert f"**Result: 0 of {len(SCENARIOS)} attacks succeeded.**" in readme
+    assert f"**Result: 0 of {len(SCENARIOS)} attacks succeeded.**" in results
+    assert f"{len(SCENARIOS)} attacks" in readme and f"0%20of%20{len(SCENARIOS)}" in readme
     for attack in SCENARIOS:
-        assert f"| {attack.title} | {attack.vector.value} |" in readme, attack.id
+        assert f"| {attack.title} | {attack.vector.value} |" in results, attack.id
 
 
 # -------------------------------------------------- no false "held" verdicts
