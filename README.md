@@ -25,7 +25,7 @@ reaches other people or cannot be undone waits for your approval and your authen
 > [report problems](../../issues).
 
 **Contents:** [What it does](#what-it-does) · [Open source, local and personal](#open-source-local-and-personal) ·
-[Why you can trust it](#why-you-can-trust-it) ·
+[Why Bastion](#why-bastion-and-not-another-assistant) · [Why you can trust it](#why-you-can-trust-it) ·
 [Get started](#get-started) · [Everyday use](#everyday-use) ·
 [Troubleshooting](#troubleshooting) · [How it works](#how-it-works) ·
 [Development](#development)
@@ -55,6 +55,23 @@ reaches other people or cannot be undone waits for your approval and your authen
 **What leaves your computer:** what you ask, and the emails and pages it reads for you, go to the
 AI provider you choose, and your Telegram messages pass through Telegram. With a local model
 (Ollama), the AI part stays on your machine too.
+
+## Why Bastion, and not another assistant
+
+An assistant that reads your email can be talked into things by the email itself (prompt
+injection), and no model is immune to it. Most assistants ask the model to be careful. Bastion
+assumes the model **will** be fooled and puts the rules in code that no message can reach.
+
+- **Hosted assistants** run on someone else's servers with their model, and mostly rely on the
+  model noticing an attack. Bastion runs on your machine, with the model you choose.
+- **DIY agent setups** run locally too, but often keep keys in plain config files and act on
+  whatever the model decides. Bastion keeps keys in your keychain, and anything sent in your
+  name needs your tap and your authenticator code, even if your chat account is stolen.
+- **It shows its work:** 24 attacks run against the real safeguards on every change, and the
+  [results](docs/RED_TEAM.md) are published.
+
+It's not the right pick if you want zero setup (a hosted assistant is easier), need it to browse
+websites or run code (deliberately out of scope for now), or want a shared assistant for a team.
 
 ## Why you can trust it
 
