@@ -85,7 +85,7 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T10 | Token theft from disk | Info disclosure | A5 | OS keyring (C8); AES-GCM field encryption for sensitive DB fields (C13) |
 | T11 | Over-broad Google access amplifies any compromise | EoP | All | The owner's own OAuth client; an access level per service, each asking for the fewest scopes; the level used is the lower of what was requested and what was granted; sending mail is opt-in; no email deletion, settings or contacts access (C9) |
 | T12 | Owner cannot tell what the agent did, or evidence is edited | Repudiation | A1, A5 | HMAC-chained audit log in SQLite, append-only triggers, `bastion audit verify` (C10) |
-| T13 | Scheduled task loops, burns money, or drifts beyond its purpose | DoS / EoP | A1 | Capability grants, step/token/cost budgets, rate limits, kill switch (C11) |
+| T13 | Scheduled task loops, burns money, or drifts beyond its purpose | DoS / EoP | A1 | Each task is granted a fixed set of tools and the model sees no others; per-run step, tool-call and token budgets plus a per-task 24-hour token budget; at most hourly; three failed runs in a row pause it; runs missed while offline are skipped, not replayed; no task starts while `/stop` is engaged, and `/cancel` or `/stop` ends a running one (C11) |
 | T14 | Poisoned dependency | All | A4 | Hash-locked dependencies, minimal dependency tree, pip-audit, Dependabot, CodeQL, SBOM, signed releases (C14) |
 | T15 | Malicious tool-call arguments (wrong types, path tricks, header injection) | Tampering | A1 | Every tool's arguments validated by a strict Pydantic schema before policy evaluation |
 | T16 | Exposed network listener attacked | EoP | A2 | No inbound ports: Telegram long polling; the CLI runs in-process (no local IPC server). The one exception is the loopback listener during `bastion google connect` (T27) |
@@ -103,6 +103,9 @@ attendees) is either blocked or requires the owner's explicit, argument-bound ap
 | T28 | An approval shows only an opaque id ("delete event abc123"), so the owner approves something other than they think | Tampering | A1 | Calendar changes and deletions name the event (its title and start); code checks them against the live event before acting and never echoes the live values; a whole recurring series is refused (only single occurrences change); the event's ETag (`If-Match`) makes Google refuse if it changed between that check and the write (C4) |
 | T29 | A calendar invitation carries an injection, or Bastion writes injected text into an event that later comes back as the owner's (persistence) | Tampering | A1 | Invitations, events guests can edit or add people to, and events Google made from email are untrusted; events Bastion writes in a tainted conversation are marked and stay untrusted; changing an event that has other guests is a `send` action the model must declare (`notify_guests`), checked against the live event; only events the owner organises can be changed (C1, C2, C12) |
 | T30 | Google access leaks or outlives its purpose: a stolen refresh token, an access token in a log, a disconnect that leaves a running daemon connected | Info disclosure | A4, A5 | Refresh token only in the OS keyring; access tokens only in memory and registered for redaction; request logging silenced; transport errors raised without their cause; the keyring is re-checked before each use, so `bastion google disconnect` (which also revokes at Google) stops a running daemon; reconnecting revokes the previous token (C8, C9) |
+| T32 | Injected text plants a scheduled task, so the attack recurs every day without the owner watching (persistence) | Tampering / EoP | A1 | `task_schedule` always asks the owner and always needs the authenticator code, whatever the policy file says; it is refused outright once the conversation contains untrusted content; tasks can never be granted the task tools, so a task cannot create, change or remove tasks (C1, C4, C5, C11) |
+| T33 | A task runs while the owner is away and acts on what it reads: sends mail, invites people, deletes | EoP | A1 | Task mode in the policy engine: every send action needs approval (even if the policy file allows sends), destructive actions are refused once the run reads untrusted content, and the approval prompt names the task; each run starts with a fresh conversation, so taint and injected text do not carry over between runs (C1, C2, C11) |
+| T34 | Someone with write access to the database widens a task's grant, rewrites its instructions, or plants a task | Tampering | A5 | A task's definition (name, schedule, instructions, tools) is one AES-GCM document bound to its id, with the key in the OS keyring: an edited, transplanted or planted definition fails to decrypt, the task never runs, and the owner is told; claiming a run is a compare-and-set, so a run is never started twice (C11, C13) |
 | T31 | Crafted email (deep MIME nesting, huge bodies, odd charsets, forged threading headers) slows or crashes the agent, or smuggles headers into a reply | DoS / Tampering | A1 | Limits on MIME depth and part count, response size and text length; HTML converted off the event loop; unknown charsets fall back to UTF-8; Message-IDs copied into a reply only if well formed; recipients are bare ASCII addresses and subjects single lines (C7, T15) |
 
 ## 8. Controls index
@@ -189,6 +192,20 @@ Where each control lives in the code: [ARCHITECTURE.md](ARCHITECTURE.md#security
 - **Search results are not quarantined.** `gmail_search` shows subjects, senders and snippets
   as written (untrusted and fenced, like web search results); only opening an email goes
   through the quarantined reader.
+- **A scheduled task acts on the owner's earlier approval.** The owner approves a task's
+  instructions and tools once; each run then reads, writes and asks within that grant without
+  a fresh request. Sends and deletions still need approval at run time, and what a run reads
+  leaves the machine only through the report to the owner and the model provider.
+- **Task approvals can expire unanswered.** A task that needs approval while the owner is away
+  waits for the normal approval timeout (10 minutes) and then counts it as "no".
+- **Scheduling state is not sealed.** Someone who can write to the database (A5) cannot change
+  what a task does or which tools it has, but can force an early run, reset its run history
+  (and so its daily budget), or put back a removed task from an old copy of the database.
+  Every run is still audited and reported to the owner.
+- **Missed runs are skipped.** If Bastion is offline for over an hour past a run, that run does
+  not happen; the owner is told when the daemon next checks.
+- **The quarantined reader's tokens are not counted in a task's budget.** Reading an email
+  costs a bounded extra model call that the per-run and daily token budgets do not see.
 - **Shell and code execution and browser automation** are deliberately excluded from v1.
 
 ## 10. How this document is kept honest

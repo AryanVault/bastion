@@ -91,6 +91,10 @@ class Tool[A: ToolArgs](ABC):
     risk: ClassVar[RiskTier]
     # Approvals of this tool always need the one-time code, whatever the policy's step-up tiers.
     step_up: ClassVar[bool] = False
+    # Every call needs the owner's approval, whatever the policy file says.
+    always_ask: ClassVar[bool] = False
+    # Refused once the conversation contains untrusted content.
+    clean_only: ClassVar[bool] = False
 
     def risk_for(self, args: A) -> RiskTier:
         """Risk of this particular call. Tools may escalate based on arguments."""
@@ -108,8 +112,14 @@ class Tool[A: ToolArgs](ABC):
         """
         return {name: _summarize(value) for name, value in args.model_dump(mode="json").items()}
 
+    def validation_context(self) -> dict[str, Any] | None:
+        """Extra facts the argument validators may check against (pydantic context)."""
+        return None
+
     def parse_args(self, raw: Mapping[str, Any]) -> A:
-        return cast("A", self.args_model.model_validate(dict(raw)))
+        return cast(
+            "A", self.args_model.model_validate(dict(raw), context=self.validation_context())
+        )
 
     def spec(self) -> ToolSpec:
         return ToolSpec(

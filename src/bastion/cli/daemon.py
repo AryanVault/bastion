@@ -109,6 +109,7 @@ async def _serve(
             model_label=f"{runtime.provider.name} / {runtime.provider.model}",
             still_valid=_unchanged(runtime.vault, config),
             warn=warn,
+            tasks=runtime.task_runner() if runtime.settings.autonomy.enabled else None,
         )
         console.print(
             f"Bastion is online as @{escape(me.username or me.first_name)}. Ctrl+C stops it."

@@ -160,3 +160,69 @@ def test_a_tool_can_demand_step_up_whatever_its_tier() -> None:
 
     assert demanded.verdict is Verdict.ASK and demanded.step_up
     assert ordinary.verdict is Verdict.ASK and not ordinary.step_up
+
+
+@pytest.mark.security
+def test_a_tool_can_demand_approval_whatever_the_policy_says() -> None:
+    from bastion.core.conversation import TaintState
+    from bastion.security.policy import DEFAULT_POLICY_TOML, PolicyEngine, Verdict, parse_policy
+    from bastion.tools.base import RiskTier
+
+    lenient = parse_policy(DEFAULT_POLICY_TOML + '\n[tools.planner]\nclean = "allow"\n')
+    engine = PolicyEngine(lenient, frozenset({"planner"}))
+
+    assert engine.decide("planner", RiskTier.WRITE, TaintState()).verdict is Verdict.ALLOW
+    demanded = engine.decide("planner", RiskTier.WRITE, TaintState(), always_ask=True)
+    assert demanded.verdict is Verdict.ASK
+
+
+@pytest.mark.security
+def test_a_clean_only_tool_is_refused_in_a_tainted_conversation() -> None:
+    from bastion.core.conversation import TaintState
+    from bastion.security.policy import PolicyEngine, Verdict, default_policy
+    from bastion.tools.base import RiskTier
+
+    engine = PolicyEngine(default_policy(), frozenset({"planner"}))
+    tainted = TaintState().with_source("web_fetch:evil.example")
+
+    clean = engine.decide("planner", RiskTier.WRITE, TaintState(), clean_only=True)
+    refused = engine.decide("planner", RiskTier.READ, tainted, clean_only=True, always_ask=True)
+
+    assert clean.verdict is Verdict.ALLOW
+    assert refused.verdict is Verdict.DENY
+    assert "web_fetch:evil.example" in refused.reason and "new conversation" in refused.reason
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("tier", "tainted", "expected"),
+    [
+        ("read", False, "allow"),
+        ("write", False, "allow"),
+        ("send", False, "ask"),
+        ("send", True, "ask"),
+        ("destructive", False, "ask"),
+        ("destructive", True, "deny"),
+    ],
+)
+def test_task_mode_never_sends_unasked_or_destroys_after_untrusted_content(
+    tier: str, tainted: bool, expected: str
+) -> None:
+    from bastion.core.conversation import TaintState
+    from bastion.security.policy import PolicyEngine, Verdict, parse_policy
+    from bastion.tools.base import RiskTier
+
+    permissive = parse_policy(
+        "[clean]\nread='allow'\nwrite='allow'\nsend='allow'\ndestructive='ask'\n"
+        "[tainted]\nread='allow'\nwrite='allow'\nsend='ask'\ndestructive='ask'\n"
+    )
+    engine = PolicyEngine(permissive, frozenset({"tool", "other"})).for_task(
+        "Brief", frozenset({"tool"})
+    )
+    taint = TaintState().with_source("gmail:evil.example") if tainted else TaintState()
+
+    decision = engine.decide("tool", RiskTier(tier), taint)
+
+    assert decision.verdict is Verdict(expected)
+    assert decision.reason.startswith("scheduled task 'Brief' (runs on its own): ")
+    assert engine.decide("other", RiskTier.READ, TaintState()).verdict is Verdict.DENY

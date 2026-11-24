@@ -3,8 +3,8 @@
 **A secure, always-on personal AI agent. The system, not the model, decides what the agent may do.**
 
 Bastion is a personal agent you talk to from Telegram or the terminal. It searches and reads the
-web, remembers things for you, reads and drafts your email, and manages your calendar; scheduled
-tasks are next. Unlike most agents, it is built on the assumption that the language model **will** be
+web, remembers things for you, reads and drafts your email, manages your calendar, and runs
+scheduled tasks such as a morning briefing. Unlike most agents, it is built on the assumption that the language model **will** be
 prompt-injected at some point: a web page or email will eventually try to make it leak your data
 or act against you. Bastion's security controls live *outside* the model, in ordinary code, so a
 hijacked model still cannot do damage.
@@ -51,7 +51,7 @@ decides permissions.
 | Least-privilege Google access: your own OAuth client, an access level you choose, sending opt-in | Over-broad account access | Built |
 | Quarantined email reader: a model with no tools summarises email for the planner | Attacker text steering the planner | Built |
 | Invitations untrusted; calendar changes checked against the live event before they run | Injection via invites, misdirected approvals | Built |
-| Capability grants for scheduled tasks | Autonomous tasks drifting beyond their purpose | Phase 4 |
+| Scheduled tasks with fixed tool grants, budgets and sealed definitions; planting one needs your code | Autonomous tasks drifting, looping, or being planted by injected text | Built |
 | Red-team prompt-injection eval suite | Regressions in any of the above | Phase 5 |
 
 Read the [threat model](docs/THREAT_MODEL.md) for the attackers, threats and accepted risks, and
@@ -131,6 +131,28 @@ Bastion reads an email, the planning model sees a summary written by a separate 
 no tools, unless you ask for the exact text. `bastion google status` checks the connection;
 `bastion google disconnect` revokes it at Google and deletes it from your computer.
 
+### Scheduled tasks
+
+Tasks run on their own while `bastion daemon` is running and send you a report on Telegram
+after each run:
+
+```
+bastion tasks add --name "Morning brief" --schedule "weekdays 08:00" \
+  --tools gmail_search,gmail_read,calendar_list_events \
+  --instructions "Summarise today's calendar and any important new email."
+```
+
+Schedules are `daily 08:00`, `weekdays 08:00`, `weekends 10:30`, `mon,wed,fri 18:30` or
+`every 4h`, in your computer's local time. You can also ask Bastion on Telegram ("every
+morning, brief me on my calendar"): it proposes the task and you approve it with your
+authenticator code. It cannot propose one in a conversation that contains outside content.
+
+Each run starts fresh and sees only the tools you granted. Sending and inviting always wait
+for your approval, deleting is refused once the run has read outside content, and every run
+has a step and token budget (plus a daily budget per task, set under `[autonomy]` in
+`config.toml`). Three failed runs in a row pause a task. `/tasks` lists tasks on Telegram,
+`/cancel` stops a running one, and `/stop` stops everything.
+
 ### Commands
 
 | Command | What it does |
@@ -140,6 +162,7 @@ no tools, unless you ask for the exact text. `bastion google status` checks the 
 | `bastion daemon` | Run Bastion on Telegram, always on |
 | `bastion telegram setup \| pair \| unpair \| totp` | Connect the bot, pair your account, set up step-up codes |
 | `bastion google connect \| status \| disconnect` | Connect Gmail and Calendar, check the connection, revoke it |
+| `bastion tasks list \| show \| add \| pause \| resume \| remove \| run` | Manage scheduled tasks; `run` runs one now in the terminal |
 | `bastion resume` | Release the `/stop` kill switch |
 | `bastion policy show` | Show what is allowed, asked about or denied |
 | `bastion audit verify` | Check the audit log for tampering (`--checkpoint` checks it against a checkpoint the bot sent you) |
@@ -153,7 +176,7 @@ no tools, unless you ask for the exact text. `bastion google status` checks the 
 - [x] Phase 1: secure core, multi-provider LLM layer, CLI, web search and fetch, memory
 - [x] Phase 2: Telegram channel with approvals and step-up auth
 - [x] Phase 3: Gmail and Google Calendar
-- [ ] Phase 4: autonomous scheduled tasks
+- [x] Phase 4: autonomous scheduled tasks
 - [ ] Phase 5: red-team eval suite, hardened Docker image, signed release
 
 ## Development

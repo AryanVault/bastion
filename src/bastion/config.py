@@ -56,11 +56,24 @@ class TelegramSettings(_Strict):
     messages_per_hour: int = Field(default=60, ge=1, le=3_600)
 
 
+class AutonomySettings(_Strict):
+    # Scheduled tasks. Each run gets its own small budget, and each task a rolling 24-hour
+    # token budget, so a task that loops or is hijacked stops on its own.
+    enabled: bool = True
+    max_tasks: int = Field(default=20, ge=1, le=100)
+    max_steps: int = Field(default=8, ge=1, le=50)
+    max_tool_calls: int = Field(default=16, ge=1, le=100)
+    max_run_tokens: int = Field(default=200_000, ge=10_000, le=2_000_000)
+    max_daily_tokens: int = Field(default=1_000_000, ge=10_000, le=20_000_000)
+    max_consecutive_failures: int = Field(default=3, ge=1, le=20)
+
+
 class Settings(_Strict):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     limits: LimitSettings = Field(default_factory=LimitSettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
+    autonomy: AutonomySettings = Field(default_factory=AutonomySettings)
 
 
 def bastion_home() -> Path:
@@ -88,6 +101,7 @@ def load_settings(home: Path) -> Settings:
 def render_config(settings: Settings) -> str:
     """TOML for ``config.toml``. Strings are JSON-escaped, which is valid TOML."""
     llm, limits, telegram = settings.llm, settings.limits, settings.telegram
+    autonomy = settings.autonomy
     lines = [
         "# Bastion configuration. Secrets are NOT stored here: they live in the OS keyring.",
         "# Manage them with: bastion secrets set <name>",
@@ -118,5 +132,16 @@ def render_config(settings: Settings) -> str:
         "# Requests accepted from the owner: a burst, refilled at a steady hourly rate.",
         f"message_burst = {telegram.message_burst}",
         f"messages_per_hour = {telegram.messages_per_hour}",
+        "",
+        "# Scheduled tasks (bastion tasks). Budgets apply to every run and to each task's day.",
+        "[autonomy]",
+        f"enabled = {str(autonomy.enabled).lower()}",
+        f"max_tasks = {autonomy.max_tasks}",
+        f"max_steps = {autonomy.max_steps}",
+        f"max_tool_calls = {autonomy.max_tool_calls}",
+        f"max_run_tokens = {autonomy.max_run_tokens}",
+        f"max_daily_tokens = {autonomy.max_daily_tokens}",
+        "# This many failed runs in a row pause the task.",
+        f"max_consecutive_failures = {autonomy.max_consecutive_failures}",
     ]
     return "\n".join(lines) + "\n"

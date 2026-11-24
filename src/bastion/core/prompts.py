@@ -31,6 +31,22 @@ Style: be concise and direct. When you use web sources, cite their URLs. For cal
 times, use the UTC offset shown in the timestamp of the owner's message.
 """
 
+TASK_PROMPT_SECTION = """
+Scheduled task: you are running "{name}", a task the owner set up earlier. The owner is
+probably not watching. Their instructions are in the next message. Your final reply is sent
+to them as this run's report, so make it a short, self-contained summary. You can use only
+the tools this task was granted. Anything that needs approval waits for the owner and may
+expire unanswered; if so, say what you could not do. Do not try to schedule, change or
+remove tasks.
+"""
+
+
+def task_system_prompt(name: str) -> str:
+    """The system prompt for one run of a scheduled task. ``name`` was approved by the owner
+    and holds no line breaks or hidden characters (``validate_name``)."""
+    return SYSTEM_PROMPT + TASK_PROMPT_SECTION.format(name=name)
+
+
 _FENCE_TAG = re.compile(r"<(/?)\s*untrusted-data", re.IGNORECASE)
 
 

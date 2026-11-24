@@ -11,8 +11,11 @@ from typing import Any
 
 import httpx2
 
+from bastion.autonomy.runner import TaskAgent, TaskRunner
+from bastion.autonomy.tasks import Task, TaskStore
 from bastion.config import DATABASE_FILE, POLICY_FILE, ConfigError, Settings, load_settings
 from bastion.core.agent import Agent, AgentLimits, Approver
+from bastion.core.prompts import task_system_prompt
 from bastion.google.api import GoogleApi, google_client
 from bastion.google.calendar import CalendarClient
 from bastion.google.gmail import GmailClient
@@ -47,6 +50,7 @@ from bastion.tools.calendar import (
 )
 from bastion.tools.gmail import GmailDraftTool, GmailReadTool, GmailSearchTool, GmailSendTool
 from bastion.tools.memory import MemoryDeleteTool, MemorySaveTool, MemorySearchTool
+from bastion.tools.tasks import TASK_TOOLS, TaskListTool, TaskRemoveTool, TaskScheduleTool
 from bastion.tools.web_fetch import WebFetchTool
 from bastion.tools.web_search import BraveSearch, WebSearchTool
 
@@ -66,6 +70,7 @@ class Runtime:
     notices: tuple[str, ...]
     # Knows every secret loaded through the vault: channels run outgoing text through it.
     redactor: Redactor
+    tasks: TaskStore
     # HTTP clients the runtime owns besides the provider's (Google APIs), closed by `aclose`.
     clients: tuple[httpx2.AsyncClient, ...] = ()
 
@@ -85,6 +90,35 @@ class Runtime:
                 max_turn_tokens=limits.max_turn_tokens,
             ),
         )
+
+    def task_agent(self, task: Task, approver: Approver) -> TaskAgent:
+        """An agent for one run of ``task``: it sees only the tools the task was granted, under
+        the policy's task mode, with the smaller per-run budgets of ``[autonomy]``."""
+        granted = [name for name in task.spec.tools if name not in TASK_TOOLS]
+        registry = ToolRegistry(
+            [tool for name in granted if (tool := self.tools.get(name)) is not None]
+        )
+        autonomy = self.settings.autonomy
+        agent = Agent(
+            provider=self.provider,
+            tools=registry,
+            policy=self.policy.for_task(task.name, registry.names),
+            approvals=ApprovalService(),
+            approver=approver,
+            audit=self.audit,
+            limits=AgentLimits(
+                max_steps=autonomy.max_steps,
+                max_tool_calls=autonomy.max_tool_calls,
+                max_output_tokens=self.settings.llm.max_output_tokens,
+                max_turn_tokens=autonomy.max_run_tokens,
+            ),
+            system_prompt=task_system_prompt(task.name),
+        )
+        missing = tuple(name for name in granted if name not in registry.names)
+        return TaskAgent(agent, tuple(sorted(registry.names)), missing)
+
+    def task_runner(self) -> TaskRunner:
+        return TaskRunner(self.tasks, self.settings.autonomy, self.audit, self.task_agent)
 
     async def aclose(self) -> None:
         """Release network resources (call inside the event loop)."""
@@ -187,7 +221,9 @@ def open_runtime(home: Path, store: SecretStore, *, provider: LLMProvider | None
     conn = connect(home / DATABASE_FILE)
     try:
         audit = open_audit_log(conn, vault, redactor)
-        bank = MemoryBank(conn, FieldCipher(vault.key(STORAGE_KEY)))
+        cipher = FieldCipher(vault.key(STORAGE_KEY))
+        bank = MemoryBank(conn, cipher)
+        tasks = TaskStore(conn, cipher)
         policy_config = load_policy(policy_path)
         llm = provider if provider is not None else build_provider(settings.llm, vault)
         base, notices = core_tools(settings, vault, bank)
@@ -197,19 +233,28 @@ def open_runtime(home: Path, store: SecretStore, *, provider: LLMProvider | None
     except BaseException:
         conn.close()
         raise
-    tools = ToolRegistry([*base, *google.tools])
+    available: list[Tool[Any]] = [*base, *google.tools]
+    if settings.autonomy.enabled:
+        grantable = frozenset(tool.name for tool in available)
+        available += [
+            TaskScheduleTool(tasks, grantable, max_tasks=settings.autonomy.max_tasks),
+            TaskListTool(tasks),
+            TaskRemoveTool(tasks),
+        ]
+    tools = ToolRegistry(available)
     policy = PolicyEngine(policy_config, tools.names)
     clients = (google.client,) if google.client is not None else ()
     return Runtime(
-        home,
-        settings,
-        vault,
-        conn,
-        audit,
-        tools,
-        policy,
-        llm,
-        (*notices, *google.notices),
-        redactor,
-        clients,
+        home=home,
+        settings=settings,
+        vault=vault,
+        conn=conn,
+        audit=audit,
+        tools=tools,
+        policy=policy,
+        provider=llm,
+        notices=(*notices, *google.notices),
+        redactor=redactor,
+        tasks=tasks,
+        clients=clients,
     )

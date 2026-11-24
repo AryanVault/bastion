@@ -44,6 +44,32 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )
         """,
     ),
+    (
+        # A task's definition is sealed in `spec` (see autonomy/tasks.py); the other
+        # columns are scheduling state only.
+        """
+        CREATE TABLE tasks (
+            id         TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            spec       TEXT NOT NULL,
+            enabled    INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+            next_run   TEXT,
+            failures   INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE task_runs (
+            id          INTEGER PRIMARY KEY,
+            task_id     TEXT NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+            started_at  TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            outcome     TEXT NOT NULL,
+            tokens      INTEGER NOT NULL,
+            tool_calls  INTEGER NOT NULL
+        )
+        """,
+        "CREATE INDEX task_runs_by_task ON task_runs (task_id, started_at)",
+    ),
 )
 
 
