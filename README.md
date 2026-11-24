@@ -1,17 +1,36 @@
-# Bastion
+<p align="center">
+  <a href="https://bastion-aryanvault.vercel.app/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
+      <img src="docs/assets/banner-light.png" width="860" alt="Bastion. An AI assistant that answers only to you. Bastion is the open-source assistant that runs on your computer. Nothing goes out in your name without your tap and your code.">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://bastion-aryanvault.vercel.app/"><b>Website</b></a> ·
+  <a href="#get-started"><b>Get started</b></a> ·
+  <a href="#how-it-works"><b>How it works</b></a> ·
+  <a href="docs/RED_TEAM.md"><b>Red-team results</b></a> ·
+  <a href="docs/THREAT_MODEL.md"><b>Threat model</b></a> ·
+  <a href="SECURITY.md"><b>Security</b></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/AryanVault/bastion/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AryanVault/bastion/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-2433c9?style=flat-square"></a>
+  <img alt="Python 3.13" src="https://img.shields.io/badge/python-3.13-2433c9?style=flat-square">
+  <a href="docs/RED_TEAM.md"><img alt="Red team: 0 of 24 attacks succeed" src="https://img.shields.io/badge/red%20team-0%20of%2024%20attacks%20succeed-ff6b2c?style=flat-square"></a>
+</p>
+
+<p align="center">
+  <b>Open source</b> · <b>Runs on your computer</b> · <b>Personal: paired to you alone</b> · <b>Any AI model, local ones too</b>
+</p>
+
+---
 
 **Your personal, open-source AI assistant. It runs on your computer, answers you on Telegram, and
 its security doesn't depend on the AI behaving.**
-
-**Website: [bastion-aryanvault.vercel.app](https://bastion-aryanvault.vercel.app/)**: see an attack get stopped, step by step.
-
-[![CI](https://github.com/AryanVault/bastion/actions/workflows/ci.yml/badge.svg)](https://github.com/AryanVault/bastion/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)
-[![Red team: 0 of 24 attacks succeed](https://img.shields.io/badge/red%20team-0%20of%2024%20attacks%20succeed-brightgreen.svg)](docs/RED_TEAM.md)
-
-**Open source** · **Runs on your computer** · **Personal: paired to you alone** · **Any AI model,
-local ones too**
 
 Bastion is a personal assistant you run yourself, on your own computer or home server, and
 message from your phone (Telegram) or your terminal. It reads and drafts your email, manages your
