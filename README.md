@@ -2,7 +2,7 @@
   <a href="https://bastion-aryanvault.vercel.app/">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
-      <img src="docs/assets/banner-light.png" width="860" alt="Bastion. An AI assistant that answers only to you. Bastion is the open-source assistant that runs on your computer. Nothing goes out in your name without your tap and your code.">
+      <img src="docs/assets/banner-light.png" width="860" alt="Bastion. An AI agent that answers only to you. Bastion is the open-source AI agent that runs on your computer. Nothing goes out in your name without your tap and your code.">
     </picture>
   </a>
 </p>
@@ -29,10 +29,10 @@
 
 ---
 
-**Your personal, open-source AI assistant. It runs on your computer, answers you on Telegram, and
+**Your personal, open-source AI agent. It runs on your computer, answers you on Telegram, and
 its security doesn't depend on the AI behaving.**
 
-Bastion is a personal assistant you run yourself, on your own computer or home server, and
+Bastion is a personal AI agent you run yourself, on your own computer or home server, and
 message from your phone (Telegram) or your terminal. It reads and drafts your email, manages your
 calendar, researches the web, remembers things for you, and runs jobs on a schedule, such as a
 briefing every morning. There is no Bastion account and no Bastion server: it's yours.
@@ -46,7 +46,7 @@ reaches other people or cannot be undone waits for your approval and your authen
 > [report problems](../../issues).
 
 **Contents:** [What it does](#what-it-does) · [Open source, local and personal](#open-source-local-and-personal) ·
-[Why Bastion](#why-bastion-and-not-another-assistant) · [Why you can trust it](#why-you-can-trust-it) ·
+[Why Bastion](#why-bastion-and-not-another-ai-agent) · [Why you can trust it](#why-you-can-trust-it) ·
 [Get started](#get-started) · [Everyday use](#everyday-use) ·
 [Troubleshooting](#troubleshooting) · [How it works](#how-it-works) ·
 [Development](#development)
@@ -77,10 +77,10 @@ reaches other people or cannot be undone waits for your approval and your authen
 AI provider you choose, and your Telegram messages pass through Telegram. With a local model
 (Ollama), the AI part stays on your machine too.
 
-## Why Bastion, and not another assistant
+## Why Bastion, and not another AI agent
 
-An assistant that reads your email can be talked into things by the email itself (prompt
-injection), and no model is immune to it. Most assistants ask the model to be careful. Bastion
+An agent that reads your email can be talked into things by the email itself (prompt
+injection), and no model is immune to it. Most agents ask the model to be careful. Bastion
 assumes the model **will** be fooled and puts the rules in code that no message can reach.
 
 - **Hosted assistants** run on someone else's servers with their model, and mostly rely on the
@@ -92,7 +92,7 @@ assumes the model **will** be fooled and puts the rules in code that no message 
   [results](docs/RED_TEAM.md) are published.
 
 It's not the right pick if you want zero setup (a hosted assistant is easier), need it to browse
-websites or run code (deliberately out of scope for now), or want a shared assistant for a team.
+websites or run code (deliberately out of scope for now), or want a shared agent for a team.
 
 ## Why you can trust it
 
@@ -214,7 +214,7 @@ Choose how much Bastion may do (the default is `--gmail draft --calendar write`)
 | `--calendar write` | ...and create, change and delete events (inviting people or deleting needs your approval and authenticator code) |
 
 When Bastion reads an email, a separate AI with no abilities summarises it first, so the
-assistant never acts on the sender's words directly. `bastion google status` checks the
+agent never acts on the sender's words directly. `bastion google status` checks the
 connection; `bastion google disconnect` revokes it at Google and removes it from your computer.
 
 ### 7. Turn on web search
