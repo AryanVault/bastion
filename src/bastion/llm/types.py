@@ -3,7 +3,10 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+# What an OpenAI-compatible API calls its output limit (newer OpenAI models want the second).
+type MaxTokensParam = Literal["max_tokens", "max_completion_tokens"]
 
 
 class Role(StrEnum):

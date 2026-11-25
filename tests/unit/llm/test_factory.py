@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -19,6 +21,20 @@ def vault_with(**secrets: str) -> Vault:
 
 def client_of(provider: Any) -> Any:
     return provider._client
+
+
+def test_the_cli_starts_without_loading_any_provider_sdk() -> None:
+    # The SDKs take seconds to import on some machines; commands like `bastion --help` and
+    # `bastion tasks list` never talk to a model, so only building a provider may load them.
+    probe = (
+        "import sys, bastion.cli.app; "
+        "print(','.join(m for m in ('anthropic', 'openai') if m in sys.modules))"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed arguments, our own interpreter
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=300
+    )
+
+    assert result.stdout.strip() == ""
 
 
 def test_anthropic_uses_the_keyring_key_and_the_official_endpoint() -> None:

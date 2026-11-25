@@ -6,12 +6,13 @@ all through the same wire format.
 
 import json
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any
 
 import openai
 
 from bastion.llm.types import (
     Completion,
+    MaxTokensParam,
     Message,
     ProviderError,
     Role,
@@ -20,8 +21,6 @@ from bastion.llm.types import (
     ToolSpec,
     Usage,
 )
-
-type MaxTokensParam = Literal["max_tokens", "max_completion_tokens"]
 
 _FINISH_REASONS = {
     "stop": StopReason.END_TURN,
