@@ -22,7 +22,7 @@ dependencies = [
     "httpx2>=2.16.2",
     "keyring>=25.7.0",
     "openai>=3.57.0",
-    "pyotp>=2.10.0,<2.11",  # TOTP step-up; held at an established release (2.11+ is days old)
+    "pyotp>=2.12.1,<2.13",  # TOTP step-up; minor versions are taken deliberately, after review
     "rich>=15.0.0",
     "typer>=0.15",
 ]
