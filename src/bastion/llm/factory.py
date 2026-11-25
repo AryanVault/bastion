@@ -2,6 +2,10 @@
 
 Base URLs are always passed explicitly, so ``ANTHROPIC_BASE_URL`` / ``OPENAI_BASE_URL``
 environment variables cannot silently redirect prompts (and API keys) to another server.
+
+The provider SDKs are imported only when a provider is built: they are large, and every
+``bastion`` command imports this module (for the presets), so importing them here would add
+seconds to commands that never talk to a model, such as ``bastion --help``.
 """
 
 from collections.abc import Mapping
@@ -10,13 +14,8 @@ from types import MappingProxyType
 from typing import Literal
 from urllib.parse import urlsplit
 
-import anthropic
-import openai
-
 from bastion.config import LLMSettings
-from bastion.llm.anthropic_provider import AnthropicProvider
-from bastion.llm.openai_provider import MaxTokensParam, OpenAICompatProvider
-from bastion.llm.types import LLMProvider
+from bastion.llm.types import LLMProvider, MaxTokensParam
 from bastion.security.vault import Vault, llm_api_key
 
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
@@ -84,6 +83,10 @@ def build_provider(settings: LLMSettings, vault: Vault) -> LLMProvider:
     validate_base_url(base_url)
     if preset.kind == "anthropic":
         return _anthropic(settings, base_url, vault)
+    import openai  # large: imported only here, see the module docstring
+
+    from bastion.llm.openai_provider import OpenAICompatProvider
+
     api_key = vault.require(llm_api_key(settings.provider)) if preset.needs_key else "unused"
     # Ignore proxy/certificate environment variables, and never follow redirects: a redirect
     # could carry the API key (and every prompt) to another host.
@@ -96,7 +99,11 @@ def build_provider(settings: LLMSettings, vault: Vault) -> LLMProvider:
     )
 
 
-def _anthropic(settings: LLMSettings, base_url: str, vault: Vault) -> AnthropicProvider:
+def _anthropic(settings: LLMSettings, base_url: str, vault: Vault) -> LLMProvider:
+    import anthropic  # large: imported only here, see the module docstring
+
+    from bastion.llm.anthropic_provider import AnthropicProvider
+
     if settings.max_output_tokens > ANTHROPIC_MAX_OUTPUT_TOKENS:
         raise ProviderConfigError(
             f"max_output_tokens above {ANTHROPIC_MAX_OUTPUT_TOKENS} needs streaming, which "
