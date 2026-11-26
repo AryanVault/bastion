@@ -27,6 +27,10 @@
   <b>Open source</b> · <b>Runs on your computer</b> · <b>Personal: paired to you alone</b> · <b>Any AI model, local ones too</b>
 </p>
 
+<p align="center"><b>See it in 20 seconds</b> (sound on)</p>
+
+https://github.com/user-attachments/assets/2c6f4001-35d1-48fe-9b11-7a35a5e92e26
+
 ---
 
 **Your personal, open-source AI agent. It runs on your computer, answers you on Telegram, and
